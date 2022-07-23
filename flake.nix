@@ -16,7 +16,7 @@
           pname = "etcdmon";
           version = "0.0.1";
           src = ./.;
-          vendorSha256 = "sha256-pQpattmS9VmO3ZIQUFn66az8GSmB4IvYhTTCFn6SUmo=";
+          vendorSha256 = "sha256-t0kbTzfNxeVxNB5qslZOtUFbQbwE05aiT+UA+baZftc=";
         };
       });
 
