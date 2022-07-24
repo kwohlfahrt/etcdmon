@@ -1,0 +1,38 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: etcdmon
+  labels:
+    app: etcdmon
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: etcdmon
+  template:
+    metadata:
+      labels:
+        app: etcdmon
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      serviceAccount: etcdmon
+      containers:
+      - name: etcdmon
+        image: etcdmon:latest
+        volumeMounts:
+        - name: etcd-certs
+          mountPath: /etc/kubernetes/pki/etcd
+          readOnly: true
+      volumes:
+      - name: etcd-certs
+        hostPath:
+          path: /etc/kubernetes/pki/etcd
+          type: Directory
