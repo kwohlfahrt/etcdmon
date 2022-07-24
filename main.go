@@ -89,15 +89,19 @@ func main() {
 	}
 	defer etcdClient.Close()
 
-	cluster := etcd.NewCluster(etcdClient)
-	{
-		ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
-		defer cancel()
-
-		membersResponse, err := cluster.MemberList(ctx)
-		if err != nil {
-			panic(err.Error())
-		}
-		klog.Infof("There are %d members in the etcd cluster\n", len(membersResponse.Members))
+	ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
+	if err := etcdClient.Sync(ctx); err != nil {
+		panic(err.Error())
 	}
+	cancel()
+	klog.Infof("Found etcd endpoints %s from etcd cluster\n", strings.Join(etcdClient.Endpoints(), ","))
+
+	cluster := etcd.NewCluster(etcdClient)
+	ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
+	membersResponse, err := cluster.MemberList(ctx)
+	cancel()
+	if err != nil {
+		panic(err.Error())
+	}
+	klog.Infof("There are %d members in the etcd cluster\n", len(membersResponse.Members))
 }
