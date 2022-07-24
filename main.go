@@ -3,12 +3,18 @@ package main
 import (
 	"context"
 	"strings"
+	"time"
+	"crypto/tls"
+	"crypto/x509"
+	"os"
 
 	flag "github.com/spf13/pflag"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
+
+	etcd "go.etcd.io/etcd/client/v3"
 )
 
 var ip = flag.IntP("flagname", "f", 1234, "help message")
@@ -53,4 +59,45 @@ func main() {
 	}
 
 	klog.Infof("Found etcd endpoints %s from pod annotations\n", strings.Join(endpoints, ","))
+
+	etcdCa := x509.NewCertPool()
+	certPath := "/etc/kubernetes/pki/etcd/ca.crt"
+	etcdCaCert, err := os.ReadFile(certPath)
+	if err != nil {
+		panic(err.Error())
+	}
+	if ok := etcdCa.AppendCertsFromPEM(etcdCaCert); !ok {
+		klog.Fatalf("Unable to parse cert from %s", certPath)
+	}
+
+	// TODO: Use service keys, don't piggyback off the server cert
+	etcdClientCert, err := tls.LoadX509KeyPair("/etc/kubernetes/pki/etcd/server.crt", "/etc/kubernetes/pki/etcd/server.key")
+	if err != nil {
+		panic(err.Error())
+	}
+	etcdTls := tls.Config{
+		Certificates: []tls.Certificate{etcdClientCert},
+		RootCAs: etcdCa,
+	}
+	etcdClient, err := etcd.New(etcd.Config{
+		Endpoints: endpoints,
+		DialTimeout: 2 * time.Second,
+		TLS: &etcdTls,
+	})
+	if err != nil {
+		panic(err.Error())
+	}
+	defer etcdClient.Close()
+
+	cluster := etcd.NewCluster(etcdClient)
+	{
+		ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
+		defer cancel()
+
+		membersResponse, err := cluster.MemberList(ctx)
+		if err != nil {
+			panic(err.Error())
+		}
+		klog.Infof("There are %d members in the etcd cluster\n", len(membersResponse.Members))
+	}
 }
