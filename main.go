@@ -2,22 +2,12 @@ package main
 
 import (
 	"context"
-	"strings"
+	"sync"
 	"time"
-	"crypto/tls"
-	"crypto/x509"
-	"os"
 
 	flag "github.com/spf13/pflag"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
-
-	etcd "go.etcd.io/etcd/client/v3"
 )
-
-var ip = flag.IntP("flagname", "f", 1234, "help message")
 
 func init() {
 	klog.InitFlags(nil)
@@ -26,18 +16,9 @@ func init() {
 func main() {
 	flag.Parse()
 
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		panic(err.Error())
-	}
-	// create the clientset
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		panic(err.Error())
-	}
-
+	k8sClient, err := NewK8s()
 	nodes := make(map[string]struct{})
-	nodeQuery, err := clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{LabelSelector: "node-role.kubernetes.io/control-plane="})
+	nodeQuery, err := k8sClient.ListNodes()
 	if err != nil {
 		panic(err.Error())
 	}
@@ -46,64 +27,36 @@ func main() {
 		nodes[node.ObjectMeta.Name] = struct{}{}
 	}
 
-	// This is how kubeadm bootstraps its etcd endpoints
-	pods, err := clientset.CoreV1().Pods(metav1.NamespaceSystem).List(context.TODO(), metav1.ListOptions{LabelSelector: "component=etcd,tier=control-plane"})
-	if err != nil {
-		panic(err.Error())
-	}
-	endpoints := []string{}
-	for _, pod := range pods.Items {
-		endpoint, ok := pod.ObjectMeta.Annotations["kubeadm.kubernetes.io/etcd.advertise-client-urls"]
-		if !ok {
-			continue
-		}
-		endpoints = append(endpoints, endpoint)
-	}
-	klog.Infof("Found etcd endpoints %s from pod annotations\n", strings.Join(endpoints, ","))
+	wg := new(sync.WaitGroup)
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		k8sClient.WatchNodes()
+	}()
 
-	etcdCa := x509.NewCertPool()
-	certPath := "/etc/kubernetes/pki/etcd/ca.crt"
-	etcdCaCert, err := os.ReadFile(certPath)
+	endpoints, err := k8sClient.GetEtcdEndpoints()
 	if err != nil {
 		panic(err.Error())
-	}
-	if ok := etcdCa.AppendCertsFromPEM(etcdCaCert); !ok {
-		klog.Fatalf("Unable to parse cert from %s", certPath)
 	}
 
-	// TODO: Use service keys, don't piggyback off the server cert
-	etcdClientCert, err := tls.LoadX509KeyPair("/etc/kubernetes/pki/etcd/server.crt", "/etc/kubernetes/pki/etcd/server.key")
-	if err != nil {
-		panic(err.Error())
-	}
-	etcdTls := tls.Config{
-		Certificates: []tls.Certificate{etcdClientCert},
-		RootCAs: etcdCa,
-	}
-	etcdClient, err := etcd.New(etcd.Config{
-		Endpoints: endpoints,
-		DialTimeout: 2 * time.Second,
-		TLS: &etcdTls,
-	})
+	etcdClient, err := NewEtcd(endpoints)
 	if err != nil {
 		panic(err.Error())
 	}
 	defer etcdClient.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	if err := etcdClient.Sync(ctx); err != nil {
 		panic(err.Error())
 	}
 	cancel()
-	klog.Infof("Found etcd endpoints %s from etcd cluster\n", strings.Join(etcdClient.Endpoints(), ","))
 
-	cluster := etcd.NewCluster(etcdClient)
-	ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
-	members, err := cluster.MemberList(ctx)
-	cancel()
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	members, err := etcdClient.MemberList(ctx)
 	if err != nil {
 		panic(err.Error())
 	}
+	cancel()
 	klog.Infof("There are %d members in the etcd cluster\n", len(members.Members))
 
 	orphanMembers := make(map[string]uint64)
@@ -122,16 +75,18 @@ func main() {
 	for k, id := range orphanMembers {
 		klog.Warningf("Did not find node for etcd member %s (%d)\n", k, id)
 	}
-	if len(orphanMembers) > len(members.Members) / 2 {
+	if len(orphanMembers) > len(members.Members)/2 {
 		klog.Errorf("%d out of %d members are missing nodes, which is more than quorum\n", len(orphanMembers), len(members.Members))
 	}
 	for k, id := range orphanMembers {
-		ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		klog.Infof("Removing orphan etcd member %s (%d)\n", k, id)
-		_, err := cluster.MemberRemove(ctx, id)
+		_, err := etcdClient.MemberRemove(ctx, id)
 		if err != nil {
 			panic(err.Error())
 		}
 	}
+
+	wg.Wait()
 }
