@@ -99,27 +99,39 @@ func main() {
 
 	cluster := etcd.NewCluster(etcdClient)
 	ctx, cancel = context.WithTimeout(context.Background(), 5 * time.Second)
-	membersResponse, err := cluster.MemberList(ctx)
+	members, err := cluster.MemberList(ctx)
 	cancel()
 	if err != nil {
 		panic(err.Error())
 	}
-	klog.Infof("There are %d members in the etcd cluster\n", len(membersResponse.Members))
+	klog.Infof("There are %d members in the etcd cluster\n", len(members.Members))
 
-	members := make(map[string]uint64)
-	for _, member := range membersResponse.Members {
+	orphanMembers := make(map[string]uint64)
+	for _, member := range members.Members {
 		if _, ok := nodes[member.Name]; ok {
 			klog.Infof("Found node for etcd member %s\n", member.Name)
 			delete(nodes, member.Name)
 		} else {
-			members[member.Name] = member.ID
+			orphanMembers[member.Name] = member.ID
 		}
 	}
 
 	for k := range nodes {
 		klog.Warningf("Did not find etcd member for node %s\n", k)
 	}
-	for k := range members {
-		klog.Warningf("Did not find node for etcd member %s\n", k)
+	for k, id := range orphanMembers {
+		klog.Warningf("Did not find node for etcd member %s (%d)\n", k, id)
+	}
+	if len(orphanMembers) > len(members.Members) / 2 {
+		klog.Errorf("%d out of %d members are missing nodes, which is more than quorum\n", len(orphanMembers), len(members.Members))
+	}
+	for k, id := range orphanMembers {
+		ctx, cancel := context.WithTimeout(context.Background(), 5 * time.Second)
+		defer cancel()
+		klog.Infof("Removing orphan etcd member %s (%d)\n", k, id)
+		_, err := cluster.MemberRemove(ctx, id)
+		if err != nil {
+			panic(err.Error())
+		}
 	}
 }
