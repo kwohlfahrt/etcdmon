@@ -36,19 +36,21 @@ func main() {
 		panic(err.Error())
 	}
 
-	nodes, err := clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{LabelSelector: "node-role.kubernetes.io/control-plane="})
+	nodes := make(map[string]struct{})
+	nodeQuery, err := clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{LabelSelector: "node-role.kubernetes.io/control-plane="})
 	if err != nil {
 		panic(err.Error())
 	}
-	klog.Infof("There are %d control-plane nodes in the cluster\n", len(nodes.Items))
+	klog.Infof("There are %d control-plane nodes in the cluster\n", len(nodeQuery.Items))
+	for _, node := range nodeQuery.Items {
+		nodes[node.ObjectMeta.Name] = struct{}{}
+	}
 
 	// This is how kubeadm bootstraps its etcd endpoints
 	pods, err := clientset.CoreV1().Pods(metav1.NamespaceSystem).List(context.TODO(), metav1.ListOptions{LabelSelector: "component=etcd,tier=control-plane"})
 	if err != nil {
 		panic(err.Error())
 	}
-	klog.Infof("There are %d etcd pods in the cluster\n", len(pods.Items))
-
 	endpoints := []string{}
 	for _, pod := range pods.Items {
 		endpoint, ok := pod.ObjectMeta.Annotations["kubeadm.kubernetes.io/etcd.advertise-client-urls"]
@@ -57,7 +59,6 @@ func main() {
 		}
 		endpoints = append(endpoints, endpoint)
 	}
-
 	klog.Infof("Found etcd endpoints %s from pod annotations\n", strings.Join(endpoints, ","))
 
 	etcdCa := x509.NewCertPool()
@@ -104,4 +105,21 @@ func main() {
 		panic(err.Error())
 	}
 	klog.Infof("There are %d members in the etcd cluster\n", len(membersResponse.Members))
+
+	members := make(map[string]uint64)
+	for _, member := range membersResponse.Members {
+		if _, ok := nodes[member.Name]; ok {
+			klog.Infof("Found node for etcd member %s\n", member.Name)
+			delete(nodes, member.Name)
+		} else {
+			members[member.Name] = member.ID
+		}
+	}
+
+	for k := range nodes {
+		klog.Warningf("Did not find etcd member for node %s\n", k)
+	}
+	for k := range members {
+		klog.Warningf("Did not find node for etcd member %s\n", k)
+	}
 }
