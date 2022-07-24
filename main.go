@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"sync"
 	"time"
 
 	flag "github.com/spf13/pflag"
@@ -13,48 +12,23 @@ func init() {
 	klog.InitFlags(nil)
 }
 
-func main() {
-	flag.Parse()
-
-	k8sClient, err := NewK8s()
+// TODO: Use k8s Informers to manage the list & watch logic
+func reconcile(k8s *K8sClient, etcd *EtcdClient) error {
 	nodes := make(map[string]struct{})
-	nodeQuery, err := k8sClient.ListNodes()
+	nodeQuery, err := k8s.ListNodes()
 	if err != nil {
-		panic(err.Error())
+		return err
 	}
+
 	klog.Infof("There are %d control-plane nodes in the cluster\n", len(nodeQuery.Items))
 	for _, node := range nodeQuery.Items {
 		nodes[node.ObjectMeta.Name] = struct{}{}
 	}
 
-	wg := new(sync.WaitGroup)
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
-		k8sClient.WatchNodes()
-	}()
-
-	endpoints, err := k8sClient.GetEtcdEndpoints()
-	if err != nil {
-		panic(err.Error())
-	}
-
-	etcdClient, err := NewEtcd(endpoints)
-	if err != nil {
-		panic(err.Error())
-	}
-	defer etcdClient.Close()
-
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	if err := etcdClient.Sync(ctx); err != nil {
-		panic(err.Error())
-	}
-	cancel()
-
-	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-	members, err := etcdClient.MemberList(ctx)
+	members, err := etcd.MemberList(ctx)
 	if err != nil {
-		panic(err.Error())
+		return err
 	}
 	cancel()
 	klog.Infof("There are %d members in the etcd cluster\n", len(members.Members))
@@ -77,16 +51,52 @@ func main() {
 	}
 	if len(orphanMembers) > len(members.Members)/2 {
 		klog.Errorf("%d out of %d members are missing nodes, which is more than quorum\n", len(orphanMembers), len(members.Members))
+		return nil
 	}
 	for k, id := range orphanMembers {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		klog.Infof("Removing orphan etcd member %s (%d)\n", k, id)
-		_, err := etcdClient.MemberRemove(ctx, id)
+		_, err := etcd.MemberRemove(ctx, id)
 		if err != nil {
-			panic(err.Error())
+			return err
 		}
 	}
 
-	wg.Wait()
+	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
+	if err := etcd.Sync(ctx); err != nil {
+		return err
+	}
+	cancel()
+
+	return nil
+}
+
+func main() {
+	flag.Parse()
+
+	k8sClient, err := NewK8s()
+	if err != nil {
+		panic(err.Error())
+	}
+	endpoints, err := k8sClient.GetEtcdEndpoints()
+	if err != nil {
+		panic(err.Error())
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	etcdClient, err := NewEtcd(endpoints, ctx)
+	if err != nil {
+		panic(err.Error())
+	}
+	defer etcdClient.Close()
+	cancel()
+
+	ch := make(chan struct{})
+	go k8sClient.WatchNodes(ch)
+	for _ = range ch {
+		if err := reconcile(k8sClient, etcdClient); err != nil {
+			panic(err.Error())
+		}
+	}
 }

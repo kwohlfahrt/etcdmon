@@ -18,7 +18,8 @@ type EtcdClient struct {
 	cluster etcd.Cluster
 }
 
-func NewEtcd(endpoints []string) (*EtcdClient, error) {
+// TODO: Use service keys, don't piggyback off the server cert
+func NewEtcd(endpoints []string, ctx context.Context) (*EtcdClient, error) {
 	ca := x509.NewCertPool()
 	certPath := "/etc/kubernetes/pki/etcd/ca.crt"
 	caCert, err := os.ReadFile(certPath)
@@ -29,7 +30,6 @@ func NewEtcd(endpoints []string) (*EtcdClient, error) {
 		klog.Fatalf("Unable to parse cert from %s", certPath)
 	}
 
-	// TODO: Use service keys, don't piggyback off the server cert
 	clientCert, err := tls.LoadX509KeyPair("/etc/kubernetes/pki/etcd/server.crt", "/etc/kubernetes/pki/etcd/server.key")
 	if err != nil {
 		return nil, err
@@ -46,6 +46,10 @@ func NewEtcd(endpoints []string) (*EtcdClient, error) {
 	if err != nil {
 		return nil, err
 	}
+	if err = client.Sync(ctx); err != nil {
+		return nil, err
+	}
+	klog.Infof("Found etcd endpoints %s from etcd cluster\n", strings.Join(client.Endpoints(), ","))
 
 	cluster := etcd.NewCluster(client)
 
@@ -56,11 +60,12 @@ func (c EtcdClient) Close() {
 	c.client.Close()
 }
 
+// Update the list of etcd endpoints the client uses
 func (c EtcdClient) Sync(ctx context.Context) error {
 	if err := c.client.Sync(ctx); err != nil {
 		return err
 	}
-	klog.Infof("Found etcd endpoints %s from etcd cluster\n", strings.Join(c.client.Endpoints(), ","))
+	klog.Infof("Sync'd etcd endpoints %s from etcd cluster\n", strings.Join(c.client.Endpoints(), ","))
 	return nil
 }
 
