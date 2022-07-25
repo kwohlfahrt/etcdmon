@@ -15,7 +15,7 @@ env:
 jobs:
   build-and-push-image:
     # Run on approved PRs only, to avoid publishing malicious images
-    if: github.event.review.state == 'approved'
+    if: github.event_name != 'pull_request_review' || github.event.review.state == 'approved'
     runs-on: ubuntu-latest
     permissions:
       contents: read
