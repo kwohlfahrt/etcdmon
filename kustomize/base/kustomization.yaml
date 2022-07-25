@@ -1,3 +1,0 @@
-resources:
-  - serviceAccount.yaml
-  - deployment.yaml

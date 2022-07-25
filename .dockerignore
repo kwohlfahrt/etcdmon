@@ -1,1 +1,5 @@
+.git
 flake.*
+kustomize/
+Dockerfile
+etcdmon
