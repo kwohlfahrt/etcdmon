@@ -3,10 +3,9 @@ on:
     tags:
       - v*
     branches:
-      - build/*
       - master
-    pull_request_review:
-      types: [submitted]
+    # All external PRs require approval to run actions
+    pull_request: ~
 
 env:
   REGISTRY: ghcr.io
@@ -14,8 +13,6 @@ env:
 
 jobs:
   build-and-push-image:
-    # Run on approved PRs only, to avoid publishing malicious images
-    if: github.event_name != 'pull_request_review' || github.event.review.state == 'approved'
     runs-on: ubuntu-latest
     permissions:
       contents: read
