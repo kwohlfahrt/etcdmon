@@ -1,0 +1,7 @@
+resources:
+  - serviceAccount.yaml
+  - deployment.yaml
+
+images:
+  - name: etcdmon:latest
+    newName: ghcr.io/kwohlfahrt/etcdmon
