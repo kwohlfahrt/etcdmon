@@ -1,11 +1,11 @@
 on:
   push:
-    tags:
-      - v*
     branches:
       - master
-    # All external PRs require approval to run actions
-    pull_request: ~
+    tags:
+      - v*
+  # All external PRs require approval to run actions
+  pull_request: ~
 
 env:
   REGISTRY: ghcr.io
