@@ -4,6 +4,9 @@ on:
       - v*
     branches:
       - build/*
+      - master
+    pull_request_review:
+      types: [submitted]
 
 env:
   REGISTRY: ghcr.io
@@ -11,6 +14,8 @@ env:
 
 jobs:
   build-and-push-image:
+    # Run on approved PRs only, to avoid publishing malicious images
+    if: github.event.review.state == 'approved'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -32,3 +37,15 @@ jobs:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+      - name: extract tags
+        id: meta
+        uses: docker/metadata-action@v4
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+      - name: Build and push
+        uses: docker/build-push-action@v3
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
