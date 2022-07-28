@@ -20,7 +20,7 @@ jobs:
         uses: actions/checkout@v3
       - name: set up buildx
         uses: docker/setup-buildx-action@v2
-      - name: build
+      - name: build etcdmon image
         uses: docker/build-push-action@v3
         with:
           context: .
@@ -38,6 +38,8 @@ jobs:
           key: go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
             go-
+      - name: generate fixtures
+        run: ./fixtures/certs.sh
       - name: test
         run: go test
 

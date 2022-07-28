@@ -85,7 +85,13 @@ func main() {
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	etcdClient, err := NewEtcd(endpoints, ctx)
+	// TODO: Use own certs, don't piggyback off etcd's
+	etcdCerts := CertPaths{
+		caCert: "/etc/kubernetes/pki/etcd/ca.crt",
+		clientCert: "/etc/kubernetes/pki/etcd/server.crt",
+		clientKey: "/etc/kubernetes/pki/etcd/server.key",
+	}
+	etcdClient, err := NewEtcd(endpoints, etcdCerts, ctx)
 	if err != nil {
 		panic(err.Error())
 	}

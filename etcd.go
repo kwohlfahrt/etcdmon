@@ -18,19 +18,23 @@ type EtcdClient struct {
 	cluster etcd.Cluster
 }
 
-// TODO: Use service keys, don't piggyback off the server cert
-func NewEtcd(endpoints []string, ctx context.Context) (*EtcdClient, error) {
+type CertPaths struct {
+	caCert string
+	clientCert string
+	clientKey string
+}
+
+func NewEtcd(endpoints []string, certs CertPaths, ctx context.Context) (*EtcdClient, error) {
 	ca := x509.NewCertPool()
-	certPath := "/etc/kubernetes/pki/etcd/ca.crt"
-	caCert, err := os.ReadFile(certPath)
+	caCert, err := os.ReadFile(certs.caCert)
 	if err != nil {
 		return nil, err
 	}
 	if ok := ca.AppendCertsFromPEM(caCert); !ok {
-		klog.Fatalf("Unable to parse cert from %s", certPath)
+		klog.Fatalf("Unable to parse cert from %s", certs.caCert)
 	}
 
-	clientCert, err := tls.LoadX509KeyPair("/etc/kubernetes/pki/etcd/server.crt", "/etc/kubernetes/pki/etcd/server.key")
+	clientCert, err := tls.LoadX509KeyPair(certs.clientCert, certs.clientKey)
 	if err != nil {
 		return nil, err
 	}
