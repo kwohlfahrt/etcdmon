@@ -111,7 +111,7 @@ func TestKubernetes(t *testing.T) {
 				t.Fatal(err)
 			}
 			if len(members.Members) != 2 {
-				t.Fatalf("Wrong number of etcd members: %d != 3", len(members.Members))
+				t.Fatalf("Wrong number of etcd members: %d != 2", len(members.Members))
 			}
 
 			return ctx

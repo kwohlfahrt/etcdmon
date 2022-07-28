@@ -96,6 +96,7 @@ func main() {
 		panic(err.Error())
 	}
 	defer etcdClient.Close()
+	etcdClient.Sync(ctx)
 	cancel()
 
 	ch := make(chan struct{})

@@ -50,10 +50,6 @@ func NewEtcd(endpoints []string, certs CertPaths, ctx context.Context) (*EtcdCli
 	if err != nil {
 		return nil, err
 	}
-	if err = client.Sync(ctx); err != nil {
-		return nil, err
-	}
-	klog.Infof("Found etcd endpoints %s from etcd cluster\n", strings.Join(client.Endpoints(), ","))
 
 	cluster := etcd.NewCluster(client)
 
@@ -69,7 +65,7 @@ func (c EtcdClient) Sync(ctx context.Context) error {
 	if err := c.client.Sync(ctx); err != nil {
 		return err
 	}
-	klog.Infof("Sync'd etcd endpoints %s from etcd cluster\n", strings.Join(c.client.Endpoints(), ","))
+	klog.Infof("Found etcd endpoints %s from etcd cluster\n", strings.Join(c.client.Endpoints(), ","))
 	return nil
 }
 
