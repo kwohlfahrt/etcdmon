@@ -24,6 +24,7 @@ jobs:
         uses: docker/build-push-action@v3
         with:
           context: .
+          tags: etcdmon
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - uses: actions/setup-go@v3
