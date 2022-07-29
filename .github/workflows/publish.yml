@@ -16,9 +16,10 @@ jobs:
   test:
     runs-on: ubuntu-latest
     services:
-      image: registry:2
-      ports:
-        - 5000:5000
+      registry:
+        image: registry:2
+        ports:
+          - 5000:5000
 
     steps:
       - name: checkout
@@ -44,8 +45,10 @@ jobs:
           key: go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
             go-
-      - name: generate fixtures
-        run: ./fixtures/certs.sh
+      - name: Prepare test environment
+        run: |
+          ./fixtures/certs.sh
+          ./fixtures/registry.sh
       - name: test
         run: go test
 
