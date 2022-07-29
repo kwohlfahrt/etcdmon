@@ -15,6 +15,11 @@ env:
 jobs:
   test:
     runs-on: ubuntu-latest
+    services:
+      image: registry:2
+      ports:
+        - 5000:5000
+
     steps:
       - name: checkout
         uses: actions/checkout@v3
@@ -24,7 +29,7 @@ jobs:
         uses: docker/build-push-action@v3
         with:
           context: .
-          tags: etcdmon
+          tags: localhost:5000/etcdmon
           cache-from: type=gha
           cache-to: type=gha,mode=max
       - uses: actions/setup-go@v3

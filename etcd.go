@@ -19,9 +19,9 @@ type EtcdClient struct {
 }
 
 type CertPaths struct {
-	caCert string
+	caCert     string
 	clientCert string
-	clientKey string
+	clientKey  string
 }
 
 func NewEtcd(endpoints []string, certs CertPaths, ctx context.Context) (*EtcdClient, error) {
