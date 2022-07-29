@@ -29,6 +29,7 @@ jobs:
         uses: docker/build-push-action@v3
         with:
           context: .
+          push: true
           tags: localhost:5000/etcdmon
           cache-from: type=gha
           cache-to: type=gha,mode=max
