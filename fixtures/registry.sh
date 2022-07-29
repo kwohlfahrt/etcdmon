@@ -7,10 +7,6 @@ CTX=$(dirname -- "${BASH_SOURCE[0]}")/..
 if [[ $(docker inspect -f '{{.State.Running}}' registry || true) != true ]]; then
 	docker run --rm --detach --publish 5000:5000 --expose 5000 --name registry registry:2
 fi
-
-docker build -t localhost:5000/etcdmon $CTX
-docker push localhost:5000/etcdmon
-
 if ! docker network inspect -f '{{.Name }}' kind; then
 	docker network create kind
 fi

@@ -18,6 +18,8 @@ jobs:
     services:
       registry:
         image: registry:2
+        # Necessary so registry.sh can add it to the `kind` network
+        options: --name registry
         ports:
           - 5000:5000
 
@@ -49,8 +51,8 @@ jobs:
             go-
       - name: Prepare test environment
         run: |
-          ./fixtures/certs.sh
-          ./fixtures/registry.sh
+          bash -x ./fixtures/certs.sh
+          bash -x ./fixtures/registry.sh
       - name: test
         run: go test
 
