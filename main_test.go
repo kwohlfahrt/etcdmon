@@ -37,25 +37,9 @@ func TestMain(m *testing.M) {
 }
 
 func TestKubernetes(t *testing.T) {
-	f1 := features.New("count node").
-		WithLabel("type", "node-count").
-		Assess("nodes", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+	f1 := features.New("node deletion").
+		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			client := cfg.Client()
-			var nodes corev1.NodeList
-			err := wait.For(conditions.New(client.Resources()).ResourceListN(
-				&nodes, 3, resources.WithLabelSelector(labels.FormatLabels(map[string]string{"node-role.kubernetes.io/control-plane": ""})),
-			), wait.WithTimeout(time.Minute*3))
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			var pods corev1.PodList
-			err = wait.For(conditions.New(client.Resources()).ResourceListN(
-				&pods, 3, resources.WithLabelSelector(labels.FormatLabels(map[string]string{"component": "etcd", "tier": "control-plane"})),
-			), wait.WithTimeout(time.Minute*1))
-			if err != nil {
-				t.Fatal(err)
-			}
 
 			name := "etcdmon"
 			labels := map[string]string{"app": name}
@@ -119,13 +103,32 @@ func TestKubernetes(t *testing.T) {
 			resources := []k8s.Object{&serviceAccount, &clusterRole, &clusterRoleBinding, &deployment}
 
 			for _, r := range resources {
-				if err = client.Resources().Create(ctx, r); err != nil {
+				if err := client.Resources().Create(ctx, r); err != nil {
 					t.Fatal(err)
 				}
 			}
-			err = wait.For(conditions.New(client.Resources()).DeploymentConditionMatch(
+			err := wait.For(conditions.New(client.Resources()).DeploymentConditionMatch(
 				&deployment, appsv1.DeploymentAvailable, corev1.ConditionTrue), wait.WithTimeout(time.Minute*1),
 			)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			return ctx
+		}).
+		Assess("etcd removed on node deletion", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			client := cfg.Client()
+			var nodes corev1.NodeList
+			err := wait.For(conditions.New(client.Resources()).ResourceListN(
+				&nodes, 3, resources.WithLabelSelector(labels.FormatLabels(map[string]string{"node-role.kubernetes.io/control-plane": ""})),
+			), wait.WithTimeout(3 * time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
+			var pods corev1.PodList
+			err = wait.For(conditions.New(client.Resources()).ResourceListN(
+				&pods, 3, resources.WithLabelSelector(labels.FormatLabels(map[string]string{"component": "etcd", "tier": "control-plane"})),
+			), wait.WithTimeout(1 * time.Minute))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -183,7 +186,7 @@ func TestKubernetes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = wait.For(conditions.New(client.Resources()).ResourceDeleted(&deletedPods[0]), wait.WithTimeout(time.Minute*5))
+			err = wait.For(conditions.New(client.Resources()).ResourceDeleted(&deletedPods[0]), wait.WithTimeout(time.Minute*3))
 			if err != nil {
 				t.Fatal(err)
 			}

@@ -1,3 +1,4 @@
 .git
 flake.*
 Dockerfile
+*_test.go
