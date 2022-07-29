@@ -1,5 +1,4 @@
 .git
 flake.*
-kustomize/
 Dockerfile
-etcdmon
+*_test.go
