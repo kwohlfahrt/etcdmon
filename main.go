@@ -2,16 +2,135 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	flag "github.com/spf13/pflag"
+	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+
+	"k8s.io/apimachinery/pkg/fields"
+	"k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
 func init() {
 	klog.InitFlags(nil)
 }
 
+type Controller struct {
+	indexer  cache.Indexer
+	queue    workqueue.RateLimitingInterface
+	informer cache.Controller
+}
+
+// NewController creates a new Controller.
+func NewController(client *kubernetes.Clientset) *Controller {
+	watcher := cache.NewListWatchFromClient(client.CoreV1().RESTClient(), "nodes", "", fields.Everything())
+	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
+	indexer, informer := cache.NewIndexerInformer(watcher, &v1.Node{}, 0, cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			key, err := cache.MetaNamespaceKeyFunc(obj)
+			if err == nil {
+				queue.Add(key)
+			}
+		},
+		UpdateFunc: func(old interface{}, new interface{}) {
+			key, err := cache.MetaNamespaceKeyFunc(new)
+			if err == nil {
+				queue.Add(key)
+			}
+		},
+		DeleteFunc: func(obj interface{}) {
+			// IndexerInformer uses a delta queue, therefore for deletes we have to use this
+			// key function.
+			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
+			if err == nil {
+				queue.Add(key)
+			}
+		},
+	}, cache.Indexers{})
+
+	return &Controller{
+		informer: informer,
+		indexer:  indexer,
+		queue:    queue,
+	}
+}
+
+func (c *Controller) Run(workers int, stop chan struct{}) {
+	defer runtime.HandleCrash()
+	defer c.queue.ShutDown()
+
+	klog.Info("starting etcd monitor controller")
+	go c.informer.Run(stop)
+
+	if !cache.WaitForCacheSync(stop, c.informer.HasSynced) {
+		runtime.HandleError(fmt.Errorf("timed out waiting for cache sync"))
+		return
+	}
+
+	for i := 0; i < workers; i++ {
+		go wait.Until(func() {
+			for c.processNextItem() {
+			}
+		}, time.Second, stop)
+	}
+
+	<-stop
+	klog.Info("stopping etcd monitor controller")
+}
+
+func (c *Controller) processNextItem() bool {
+	key, quit := c.queue.Get()
+	if quit {
+		return false
+	}
+	defer c.queue.Done(key)
+
+	err := c.removeEtcd(key.(string))
+	c.handleErr(err, key)
+	return true
+}
+
+func (c *Controller) removeEtcd(key string) error {
+	obj, exists, err := c.indexer.GetByKey(key)
+	if err != nil {
+		klog.Errorf("Failed to fetch object with key %s from store: %v", key, err)
+		return err
+	}
+
+	if !exists {
+		fmt.Printf("Node does not exist anymore: %s\n", key)
+	} else {
+		fmt.Printf("Update for node: %s\n", obj.(*v1.Node).GetName())
+	}
+
+	return nil
+}
+
+func (c *Controller) handleErr(err error, key interface{}) {
+	if err == nil {
+		c.queue.Forget(key)
+		return
+	}
+
+	if c.queue.NumRequeues(key) < 5 {
+		klog.Warningf("Error syncing node %v: %v", key, err)
+		c.queue.AddRateLimited(key)
+		return
+	}
+
+	c.queue.Forget(key)
+	runtime.HandleError(err)
+	klog.Errorf("Giving up reconciling node %v: %v", key, err)
+
+}
+
+/*
 // TODO: Use k8s Informers to manage the list & watch logic
 func reconcile(k8s *K8sClient, etcd *EtcdClient) error {
 	nodes := make(map[string]struct{})
@@ -65,12 +184,14 @@ func reconcile(k8s *K8sClient, etcd *EtcdClient) error {
 
 	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
 	if err := etcd.Sync(ctx); err != nil {
+		cancel()
 		return err
 	}
 	cancel()
 
 	return nil
 }
+*/
 
 func main() {
 	flag.Parse()
@@ -99,11 +220,11 @@ func main() {
 	etcdClient.Sync(ctx)
 	cancel()
 
-	ch := make(chan struct{})
-	go k8sClient.WatchNodes(ch)
-	for _ = range ch {
-		if err := reconcile(k8sClient, etcdClient); err != nil {
-			panic(err.Error())
-		}
-	}
+	controller := NewController(k8sClient.clientset)
+
+	stop := make(chan struct{})
+	defer close(stop)
+	go controller.Run(1, stop)
+
+	select {}
 }
