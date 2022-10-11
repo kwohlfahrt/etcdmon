@@ -121,14 +121,14 @@ func TestKubernetes(t *testing.T) {
 			var nodes corev1.NodeList
 			err := wait.For(conditions.New(client.Resources()).ResourceListN(
 				&nodes, 3, resources.WithLabelSelector(labels.FormatLabels(map[string]string{"node-role.kubernetes.io/control-plane": ""})),
-			), wait.WithTimeout(3 * time.Minute))
+			), wait.WithTimeout(3*time.Minute))
 			if err != nil {
 				t.Fatal(err)
 			}
 			var pods corev1.PodList
 			err = wait.For(conditions.New(client.Resources()).ResourceListN(
 				&pods, 3, resources.WithLabelSelector(labels.FormatLabels(map[string]string{"component": "etcd", "tier": "control-plane"})),
-			), wait.WithTimeout(1 * time.Minute))
+			), wait.WithTimeout(1*time.Minute))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -159,12 +159,9 @@ func TestKubernetes(t *testing.T) {
 
 			deletedNode := nodes.Items[0]
 			deletedPods := make([]corev1.Pod, 0, 1)
-			survivingPods := make([]corev1.Pod, 0, len(pods.Items)-1)
 			for _, pod := range pods.Items {
 				if pod.Spec.NodeName == deletedNode.ObjectMeta.Name {
 					deletedPods = append(deletedPods, pod)
-				} else {
-					survivingPods = append(survivingPods, pod)
 				}
 			}
 			if len(deletedPods) != 1 {
