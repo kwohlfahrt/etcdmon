@@ -14,8 +14,7 @@ import (
 )
 
 type EtcdClient struct {
-	client  *etcd.Client
-	cluster etcd.Cluster
+	client *etcd.Client
 }
 
 type CertPaths struct {
@@ -51,9 +50,7 @@ func NewEtcd(endpoints []string, certs CertPaths, ctx context.Context) (*EtcdCli
 		return nil, err
 	}
 
-	cluster := etcd.NewCluster(client)
-
-	return &EtcdClient{client: client, cluster: cluster}, nil
+	return &EtcdClient{client: client}, nil
 }
 
 func (c EtcdClient) Close() {
@@ -70,9 +67,9 @@ func (c EtcdClient) Sync(ctx context.Context) error {
 }
 
 func (c EtcdClient) MemberList(ctx context.Context) (*etcd.MemberListResponse, error) {
-	return c.cluster.MemberList(ctx)
+	return c.client.Cluster.MemberList(ctx)
 }
 
 func (c EtcdClient) MemberRemove(ctx context.Context, id uint64) (*etcd.MemberRemoveResponse, error) {
-	return c.cluster.MemberRemove(ctx, id)
+	return c.client.Cluster.MemberRemove(ctx, id)
 }
