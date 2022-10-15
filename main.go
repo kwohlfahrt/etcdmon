@@ -12,7 +12,7 @@ import (
 	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
 
-	"k8s.io/apimachinery/pkg/fields"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
@@ -29,26 +29,29 @@ type Controller struct {
 
 // NewController creates a new Controller.
 func NewController(client *kubernetes.Clientset) *Controller {
-	watcher := cache.NewListWatchFromClient(client.CoreV1().RESTClient(), "nodes", "", fields.Everything())
+	watcher := cache.NewFilteredListWatchFromClient(client.CoreV1().RESTClient(), "nodes", "", func(options *metav1.ListOptions) {
+		options.LabelSelector = "node-role.kubernetes.io/control-plane="
+	})
 	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 	indexer, informer := cache.NewIndexerInformer(watcher, &v1.Node{}, 0, cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			key, err := cache.MetaNamespaceKeyFunc(obj)
 			if err == nil {
+				klog.Infof("Adding node %s", key)
 				queue.Add(key)
 			}
 		},
 		UpdateFunc: func(old interface{}, new interface{}) {
 			key, err := cache.MetaNamespaceKeyFunc(new)
 			if err == nil {
+				klog.Infof("Updating node %s", key)
 				queue.Add(key)
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
-			// IndexerInformer uses a delta queue, therefore for deletes we have to use this
-			// key function.
 			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
 			if err == nil {
+				klog.Infof("Deleting node %s", key)
 				queue.Add(key)
 			}
 		},
