@@ -39,7 +39,64 @@ func TestMain(m *testing.M) {
 }
 
 func TestKubernetes(t *testing.T) {
-	f1 := features.New("node deletion").
+	var etcd *EtcdClient
+	var nodes corev1.NodeList
+
+	sync := features.New("node sync").
+		WithSetup("etcd client", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			client := cfg.Client()
+			err := wait.For(conditions.New(client.Resources()).ResourceListN(
+				&nodes, nNodes, resources.WithLabelSelector(labels.FormatLabels(map[string]string{"node-role.kubernetes.io/control-plane": ""})),
+			), wait.WithTimeout(3*time.Minute))
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Configured in kind.yaml
+			etcdEndpoints := make([]string, 0, nNodes)
+			for p := 5001; p < 5001+nNodes; p++ {
+				etcdEndpoints = append(etcdEndpoints, fmt.Sprintf("127.0.0.1:%d", p))
+			}
+			etcdCerts := CertPaths{
+				caCert:     "./fixtures/ca.crt",
+				clientCert: "./fixtures/ca.crt",
+				clientKey:  "./fixtures/ca.key",
+			}
+			etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			etcd, err = NewEtcd(etcdEndpoints, etcdCerts, etcdCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			members, err := etcd.MemberList(etcdCtx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cancel()
+			if len(members.Members) != nNodes {
+				t.Fatalf("Wrong number of initial etcd members: %d != %d", len(members.Members), nNodes)
+			}
+			return ctx
+		}).
+		WithSetup("delete node", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			client := cfg.Client()
+			deletedNode := nodes.Items[0]
+			err := cfg.Client().Resources().Delete(context.TODO(), &deletedNode)
+			if err != nil {
+				t.Fatal(err)
+			}
+
+			// Try twice, to give the load-balancer a chance to detect the downed node
+			for i := 0; i < 2; i++ {
+				err = wait.For(conditions.New(client.Resources()).ResourceDeleted(&deletedNode), wait.WithTimeout(time.Minute*1))
+				if err == nil {
+					break
+				}
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			return ctx
+		}).
 		WithSetup("install etcdmon", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			client := cfg.Client()
 
@@ -118,42 +175,24 @@ func TestKubernetes(t *testing.T) {
 
 			return ctx
 		}).
-		Assess("etcd removed on node deletion", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			client := cfg.Client()
-			var nodes corev1.NodeList
-			err := wait.For(conditions.New(client.Resources()).ResourceListN(
-				&nodes, nNodes, resources.WithLabelSelector(labels.FormatLabels(map[string]string{"node-role.kubernetes.io/control-plane": ""})),
-			), wait.WithTimeout(3*time.Minute))
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			// Configured in kind.yaml
-			etcdEndpoints := make([]string, 0, 4)
-			for p := 5001; p < 5001+nNodes; p++ {
-				etcdEndpoints = append(etcdEndpoints, fmt.Sprintf("127.0.0.1:%d", p))
-			}
-			etcdCerts := CertPaths{
-				caCert:     "./fixtures/ca.crt",
-				clientCert: "./fixtures/ca.crt",
-				clientKey:  "./fixtures/ca.key",
-			}
+		Assess("etcd removed on startup", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			etcd, err := NewEtcd(etcdEndpoints, etcdCerts, etcdCtx)
-			if err != nil {
-				t.Fatal(err)
-			}
 			members, err := etcd.MemberList(etcdCtx)
+			cancel()
 			if err != nil {
 				t.Fatal(err)
 			}
-			cancel()
-			if len(members.Members) != nNodes {
-				t.Fatalf("Wrong number of initial etcd members: %d != %d", len(members.Members), nNodes)
+			if len(members.Members) != nNodes-1 {
+				t.Fatalf("Wrong number of final etcd members: %d != %d", len(members.Members), nNodes-1)
 			}
+			return ctx
+		}).Feature()
 
-			deletedNode := nodes.Items[0]
-			err = cfg.Client().Resources().Delete(context.TODO(), &nodes.Items[0])
+	deletion := features.New("node deletion").
+		WithSetup("delete node", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			client := cfg.Client()
+			deletedNode := nodes.Items[1]
+			err := cfg.Client().Resources().Delete(context.TODO(), &deletedNode)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -168,19 +207,20 @@ func TestKubernetes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-
-			etcdCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
-			members, err = etcd.MemberList(etcdCtx)
+			return ctx
+		}).
+		Assess("etcd removed on node deletion", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			members, err := etcd.MemberList(etcdCtx)
 			cancel()
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(members.Members) != nNodes-1 {
-				t.Fatalf("Wrong number of final etcd members: %d != %d", len(members.Members), nNodes-1)
+			if len(members.Members) != nNodes-2 {
+				t.Fatalf("Wrong number of final etcd members: %d != %d", len(members.Members), nNodes-2)
 			}
-
 			return ctx
 		}).Feature()
 
-	testenv.Test(t, f1)
+	testenv.Test(t, sync, deletion)
 }

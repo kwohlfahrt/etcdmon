@@ -16,7 +16,7 @@
           pname = "etcdmon";
           version = "0.0.1";
           src = ./.;
-          vendorSha256 = "sha256-iNhypHbBn1alB5LE5uOq8PwbhfwkcR9fs1P4xa6MYYs=";
+          vendorSha256 = "sha256-bpOGmgr9eA1OePFicmBviUWc30g9d37ocgljL1zcYAI=";
 
           checkInputs = [ pkgs.kind ];
         };
