@@ -14,4 +14,5 @@ if [ "$(docker inspect -f='{{json .NetworkSettings.Networks.kind}}' registry)" =
 	docker network connect "kind" registry
 fi
 
-docker build --push -t 127.0.0.1:5000/etcdmon "$CTX"
+# To push to the registry, run:
+# docker build --push -t 127.0.0.1:5000/etcdmon "$CTX"
