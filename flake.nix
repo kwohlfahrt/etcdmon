@@ -12,11 +12,11 @@
       packages = forAllSystems (system: let
         pkgs = nixpkgsFor.${system};
       in {
-        etcdmon = pkgs.buildGo118Module {
+        etcdmon = pkgs.buildGo119Module {
           pname = "etcdmon";
-          version = "0.0.1";
+          version = "0.2.0";
           src = ./.;
-          vendorSha256 = "sha256-bpOGmgr9eA1OePFicmBviUWc30g9d37ocgljL1zcYAI=";
+          vendorSha256 = "sha256-hk0wfcoPx2OGUCh6Fh55S2P3ZsAfCM1ihYyR7iSSV40";
 
           checkInputs = [ pkgs.kind ];
         };

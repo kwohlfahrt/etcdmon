@@ -2,81 +2,215 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"strings"
+	"time"
 
-	corev1 "k8s.io/api/core/v1"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/watch"
+	v1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/kubernetes"
-	"k8s.io/client-go/rest"
-
+	"k8s.io/client-go/tools/cache"
+	"k8s.io/client-go/util/workqueue"
 	"k8s.io/klog/v2"
+
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/util/runtime"
+	"k8s.io/apimachinery/pkg/util/wait"
 )
 
-type K8sClient struct {
-	clientset *kubernetes.Clientset
+type Controller struct {
+	informer    cache.SharedIndexInformer
+	queue       workqueue.RateLimitingInterface
+	podInformer cache.SharedIndexInformer
 }
 
-func NewK8s() (*K8sClient, error) {
-	config, err := rest.InClusterConfig()
-	if err != nil {
-		return nil, err
-	}
-	clientset, err := kubernetes.NewForConfig(config)
-	if err != nil {
-		return nil, err
-	}
+// NewController creates a new Controller.
+func NewController(client *kubernetes.Clientset) *Controller {
+	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 
-	return &K8sClient{clientset: clientset}, nil
-}
-
-// Send (empty) messages to a channel when a node is deleted or added
-func (c K8sClient) WatchNodes(ch chan struct{}) {
-	initialNodes, err := c.ListNodes()
-	if err != nil {
-		panic(err.Error())
-	}
-	klog.Infof("Initialized with %d nodes\n", len(initialNodes.Items))
-	ch <- struct{}{}
-
-	watcher, err := c.clientset.CoreV1().Nodes().Watch(context.TODO(), metav1.ListOptions{
-		LabelSelector:   "node-role.kubernetes.io/control-plane=",
-		ResourceVersion: initialNodes.ListMeta.ResourceVersion,
+	watcher := cache.NewFilteredListWatchFromClient(client.CoreV1().RESTClient(), "nodes", "", func(options *metav1.ListOptions) {
+		options.LabelSelector = "node-role.kubernetes.io/control-plane="
 	})
-	if err != nil {
-		panic(err.Error())
+	informer := cache.NewSharedIndexInformer(watcher, &v1.Node{}, 0, cache.Indexers{})
+	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		DeleteFunc: func(obj interface{}) {
+			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
+			if err == nil {
+				klog.Infof("Deleting node %s", key)
+				queue.Add(key)
+			}
+		},
+	})
+
+	podWatcher := cache.NewFilteredListWatchFromClient(client.CoreV1().RESTClient(), "pods", "kube-system", func(options *metav1.ListOptions) {
+		options.LabelSelector = "component=etcd"
+	})
+	podInformer := cache.NewSharedIndexInformer(podWatcher, &v1.Pod{}, 0, cache.Indexers{})
+	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			key, err := cache.MetaNamespaceKeyFunc(obj)
+			if err == nil {
+				klog.Infof("Adding pod %s", key)
+				queue.Add(key)
+			}
+		},
+	})
+
+	return &Controller{
+		informer:    informer,
+		podInformer: podInformer,
+		queue:       queue,
+	}
+}
+
+func (c *Controller) Run(workers int, ctx context.Context) {
+	defer runtime.HandleCrash()
+	defer c.queue.ShutDown()
+
+	klog.Info("starting etcd monitor controller")
+	go c.informer.Run(ctx.Done())
+	go c.podInformer.Run(ctx.Done())
+
+	if !cache.WaitForNamedCacheSync("etcd-monitor", ctx.Done(), c.informer.HasSynced, c.podInformer.HasSynced) {
+		runtime.HandleError(fmt.Errorf("timed out waiting for cache sync"))
+		return
 	}
 
-	klog.Info("Watching for node changes\n")
-	for event := range watcher.ResultChan() {
-		node := event.Object.(*corev1.Node)
-		switch event.Type {
-		case watch.Added:
-		case watch.Deleted:
-			klog.Infof("Event %s for node %s\n", event.Type, node.ObjectMeta.Name)
-			ch <- struct{}{}
+	etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	// TODO: Use own certs, don't piggyback off etcd's
+	etcdCerts := CertPaths{
+		caCert:     "/etc/kubernetes/pki/etcd/ca.crt",
+		clientCert: "/etc/kubernetes/pki/etcd/server.crt",
+		clientKey:  "/etc/kubernetes/pki/etcd/server.key",
+	}
+	etcd, err := NewEtcd(c.EtcdEndpoints(), etcdCerts, etcdCtx)
+	cancel()
+	if err != nil {
+		runtime.HandleError(err)
+		return
+	}
+	defer etcd.Close()
+	// TODO: Don't unnecessarily sync the initial pods
+
+	c.reconcileEtcd(etcd, ctx)
+	for i := 0; i < workers; i++ {
+		go wait.Until(func() {
+			key, quit := c.queue.Get()
+			if quit {
+				return
+			}
+			defer c.queue.Done(key)
+			err := c.processItem(key.(string), etcd, ctx)
+			c.handleErr(err, key)
+		}, 0, ctx.Done())
+	}
+
+	<-ctx.Done()
+	klog.Info("stopping etcd monitor controller")
+}
+
+func (c *Controller) processItem(key string, etcd *EtcdClient, baseCtx context.Context) error {
+	// TODO: Implement a better way of figuring out what informer the key belongs to
+	_, exists, err := c.podInformer.GetIndexer().GetByKey(key)
+	if err != nil {
+		klog.Errorf("Failed to fetch object with key %s from store: %v", key, err)
+		return err
+	}
+
+	if exists {
+		// Process new pod
+		return c.syncEtcd(etcd, baseCtx)
+	}
+
+	// Otherwise, was a deleted node (or pod which went stale)
+	obj, exists, err := c.informer.GetIndexer().GetByKey(key)
+	if err != nil {
+		klog.Errorf("Failed to fetch object with key %s from store: %v", key, err)
+		return err
+	}
+
+	klog.Infof("Processing node: %s, present? %t %v", key, exists, obj)
+	return c.reconcileEtcd(etcd, baseCtx)
+}
+
+func (c *Controller) syncEtcd(etcd *EtcdClient, baseCtx context.Context) error {
+	ctx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
+	defer cancel()
+	return etcd.Sync(ctx)
+}
+
+func (c *Controller) reconcileEtcd(etcd *EtcdClient, baseCtx context.Context) error {
+	nodes := make(map[string]struct{})
+	for _, node := range c.informer.GetIndexer().List() {
+		nodes[node.(*v1.Node).ObjectMeta.Name] = struct{}{}
+	}
+	klog.Infof("There are %d control-plane nodes in the cluster\n", len(nodes))
+
+	ctx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
+	members, err := etcd.MemberList(ctx)
+	cancel()
+	if err != nil {
+		return err
+	}
+	klog.Infof("There are %d members in the etcd cluster\n", len(members.Members))
+
+	orphanMembers := make(map[string]uint64)
+	for _, member := range members.Members {
+		if _, ok := nodes[member.Name]; ok {
+			klog.Infof("Found node for etcd member %s\n", member.Name)
+			delete(nodes, member.Name)
+		} else {
+			orphanMembers[member.Name] = member.ID
 		}
 	}
-}
 
-func (c K8sClient) ListNodes() (*corev1.NodeList, error) {
-	return c.clientset.CoreV1().Nodes().List(context.TODO(), metav1.ListOptions{LabelSelector: "node-role.kubernetes.io/control-plane="})
-}
-
-// Use pod annotations provided by kubeadm to bootstrap initial etcd endpoints
-func (c K8sClient) GetEtcdEndpoints() ([]string, error) {
-	pods, err := c.clientset.CoreV1().Pods(metav1.NamespaceSystem).List(context.TODO(), metav1.ListOptions{LabelSelector: "component=etcd,tier=control-plane"})
-	if err != nil {
-		return nil, err
+	for k := range nodes {
+		klog.Warningf("Did not find etcd member for node %s\n", k)
 	}
+	if len(orphanMembers) > len(members.Members)/2 {
+		klog.Errorf("%d out of %d members are missing nodes, which is more than quorum\n", len(orphanMembers), len(members.Members))
+		return nil
+	}
+	for k, id := range orphanMembers {
+		klog.Infof("Removing orphan etcd member %s (%x)\n", k, id)
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		_, err := etcd.MemberRemove(ctx, id)
+		cancel()
+		if err != nil {
+			return err
+		}
+	}
+
+	return c.syncEtcd(etcd, baseCtx)
+}
+
+func (c *Controller) handleErr(err error, key interface{}) {
+	if err == nil {
+		c.queue.Forget(key)
+		return
+	}
+
+	if c.queue.NumRequeues(key) < 5 {
+		klog.Warningf("Error syncing node %v: %v", key, err)
+		c.queue.AddRateLimited(key)
+		return
+	}
+
+	c.queue.Forget(key)
+	runtime.HandleError(err)
+	klog.Errorf("Giving up reconciling node %v: %v", key, err)
+}
+
+func (c *Controller) EtcdEndpoints() []string {
+	pods := c.podInformer.GetIndexer().List()
+
 	endpoints := []string{}
-	for _, pod := range pods.Items {
-		endpoint, ok := pod.ObjectMeta.Annotations["kubeadm.kubernetes.io/etcd.advertise-client-urls"]
+	for _, pod := range pods {
+		endpoint, ok := pod.(*v1.Pod).ObjectMeta.Annotations["kubeadm.kubernetes.io/etcd.advertise-client-urls"]
 		if !ok {
 			continue
 		}
 		endpoints = append(endpoints, endpoint)
 	}
 	klog.Infof("Found etcd endpoints %s from pod annotations\n", strings.Join(endpoints, ","))
-	return endpoints, nil
+	return endpoints
 }
