@@ -22,6 +22,8 @@ import (
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
 
+const nNodes = 4
+
 var testenv env.Environment
 
 func TestMain(m *testing.M) {
@@ -38,7 +40,7 @@ func TestMain(m *testing.M) {
 
 func TestKubernetes(t *testing.T) {
 	f1 := features.New("node deletion").
-		Setup(func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+		WithSetup("install etcdmon", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			client := cfg.Client()
 
 			name := "etcdmon"
@@ -49,7 +51,7 @@ func TestKubernetes(t *testing.T) {
 				Rules: []rbacv1.PolicyRule{{
 					APIGroups: []string{""},
 					Resources: []string{"pods"},
-					Verbs:     []string{"get", "list"},
+					Verbs:     []string{"get", "list", "watch"},
 				}, {
 					APIGroups: []string{""},
 					Resources: []string{"nodes"},
@@ -120,22 +122,15 @@ func TestKubernetes(t *testing.T) {
 			client := cfg.Client()
 			var nodes corev1.NodeList
 			err := wait.For(conditions.New(client.Resources()).ResourceListN(
-				&nodes, 3, resources.WithLabelSelector(labels.FormatLabels(map[string]string{"node-role.kubernetes.io/control-plane": ""})),
-			), wait.WithTimeout(3 * time.Minute))
-			if err != nil {
-				t.Fatal(err)
-			}
-			var pods corev1.PodList
-			err = wait.For(conditions.New(client.Resources()).ResourceListN(
-				&pods, 3, resources.WithLabelSelector(labels.FormatLabels(map[string]string{"component": "etcd", "tier": "control-plane"})),
-			), wait.WithTimeout(1 * time.Minute))
+				&nodes, nNodes, resources.WithLabelSelector(labels.FormatLabels(map[string]string{"node-role.kubernetes.io/control-plane": ""})),
+			), wait.WithTimeout(3*time.Minute))
 			if err != nil {
 				t.Fatal(err)
 			}
 
 			// Configured in kind.yaml
-			etcdEndpoints := make([]string, 0, 3)
-			for p := 5001; p <= 5003; p++ {
+			etcdEndpoints := make([]string, 0, 4)
+			for p := 5001; p < 5001+nNodes; p++ {
 				etcdEndpoints = append(etcdEndpoints, fmt.Sprintf("127.0.0.1:%d", p))
 			}
 			etcdCerts := CertPaths{
@@ -153,24 +148,11 @@ func TestKubernetes(t *testing.T) {
 				t.Fatal(err)
 			}
 			cancel()
-			if len(members.Members) != 3 {
-				t.Fatalf("Wrong number of etcd members: %d != 3", len(members.Members))
+			if len(members.Members) != nNodes {
+				t.Fatalf("Wrong number of initial etcd members: %d != %d", len(members.Members), nNodes)
 			}
 
 			deletedNode := nodes.Items[0]
-			deletedPods := make([]corev1.Pod, 0, 1)
-			survivingPods := make([]corev1.Pod, 0, len(pods.Items)-1)
-			for _, pod := range pods.Items {
-				if pod.Spec.NodeName == deletedNode.ObjectMeta.Name {
-					deletedPods = append(deletedPods, pod)
-				} else {
-					survivingPods = append(survivingPods, pod)
-				}
-			}
-			if len(deletedPods) != 1 {
-				t.Fatalf("Wrong number of etcd pods on deleted node: %d != 1", len(deletedPods))
-			}
-
 			err = cfg.Client().Resources().Delete(context.TODO(), &nodes.Items[0])
 			if err != nil {
 				t.Fatal(err)
@@ -186,10 +168,6 @@ func TestKubernetes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			err = wait.For(conditions.New(client.Resources()).ResourceDeleted(&deletedPods[0]), wait.WithTimeout(time.Minute*3))
-			if err != nil {
-				t.Fatal(err)
-			}
 
 			etcdCtx, cancel = context.WithTimeout(ctx, 5*time.Second)
 			members, err = etcd.MemberList(etcdCtx)
@@ -197,8 +175,8 @@ func TestKubernetes(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(members.Members) != 2 {
-				t.Fatalf("Wrong number of etcd members: %d != 2", len(members.Members))
+			if len(members.Members) != nNodes-1 {
+				t.Fatalf("Wrong number of final etcd members: %d != %d", len(members.Members), nNodes-1)
 			}
 
 			return ctx

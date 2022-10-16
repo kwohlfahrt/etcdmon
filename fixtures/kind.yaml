@@ -28,3 +28,11 @@ nodes:
   extraPortMappings:
   - containerPort: 2379
     hostPort: 5003
+- role: control-plane
+  image: etcdmon-test
+  extraMounts:
+  - hostPath: ./fixtures/4/
+    containerPath: /etc/kubernetes/pki/etcd
+  extraPortMappings:
+  - containerPort: 2379
+    hostPort: 5004
