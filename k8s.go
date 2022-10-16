@@ -149,7 +149,7 @@ func (c *Controller) reconcileEtcd(key string, etcd *EtcdClient, baseCtx context
 	for k, id := range orphanMembers {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		klog.Infof("Removing orphan etcd member %s (%d)\n", k, id)
+		klog.Infof("Removing orphan etcd member %s (%x)\n", k, id)
 		_, err := etcd.MemberRemove(ctx, id)
 		if err != nil {
 			return err
