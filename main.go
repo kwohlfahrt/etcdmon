@@ -64,12 +64,8 @@ func reconcile(k8s *K8sClient, etcd *EtcdClient) error {
 	}
 
 	ctx, cancel = context.WithTimeout(context.Background(), 5*time.Second)
-	if err := etcd.Sync(ctx); err != nil {
-		return err
-	}
-	cancel()
-
-	return nil
+	defer cancel()
+	return etcd.Sync(ctx)
 }
 
 func main() {
@@ -101,7 +97,7 @@ func main() {
 
 	ch := make(chan struct{})
 	go k8sClient.WatchNodes(ch)
-	for _ = range ch {
+	for range ch {
 		if err := reconcile(k8sClient, etcdClient); err != nil {
 			panic(err.Error())
 		}
