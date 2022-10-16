@@ -122,13 +122,12 @@ func (c *Controller) processItem(key string, etcd *EtcdClient, baseCtx context.C
 	}
 
 	// Otherwise, was a deleted node (or pod which went stale)
-	obj, exists, err := c.informer.GetIndexer().GetByKey(key)
+	_, exists, err = c.informer.GetIndexer().GetByKey(key)
 	if err != nil {
 		klog.Errorf("Failed to fetch object with key %s from store: %v", key, err)
 		return err
 	}
 
-	klog.Infof("Processing node: %s, present? %t %v", key, exists, obj)
 	return c.reconcileEtcd(etcd, baseCtx)
 }
 
