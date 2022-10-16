@@ -92,29 +92,51 @@ func (c *Controller) Run(workers int, ctx context.Context) {
 
 	for i := 0; i < workers; i++ {
 		go wait.Until(func() {
-			for {
-				key, quit := c.queue.Get()
-				if quit {
-					return
-				}
-				defer c.queue.Done(key)
-				err := c.reconcileEtcd(key.(string), etcd, ctx)
-				c.handleErr(err, key)
+			key, quit := c.queue.Get()
+			if quit {
+				return
 			}
-		}, time.Second, ctx.Done())
+			defer c.queue.Done(key)
+			err := c.processItem(key.(string), etcd, ctx)
+			c.handleErr(err, key)
+		}, 0, ctx.Done())
 	}
 
 	<-ctx.Done()
 	klog.Info("stopping etcd monitor controller")
 }
 
-func (c *Controller) reconcileEtcd(key string, etcd *EtcdClient, baseCtx context.Context) error {
-	_, _, err := c.informer.GetIndexer().GetByKey(key)
+func (c *Controller) processItem(key string, etcd *EtcdClient, baseCtx context.Context) error {
+	// TODO: Implement a better way of figuring out what informer the key belongs to
+	_, exists, err := c.podInformer.GetIndexer().GetByKey(key)
 	if err != nil {
 		klog.Errorf("Failed to fetch object with key %s from store: %v", key, err)
 		return err
 	}
 
+	if exists {
+		// Process new pod
+		return c.syncEtcd(etcd, baseCtx)
+	}
+
+	// Otherwise, was a deleted node (or pod which went stale)
+	obj, exists, err := c.informer.GetIndexer().GetByKey(key)
+	if err != nil {
+		klog.Errorf("Failed to fetch object with key %s from store: %v", key, err)
+		return err
+	}
+
+	klog.Infof("Processing node: %s, present? %t %v", key, exists, obj)
+	return c.reconcileEtcd(etcd, baseCtx)
+}
+
+func (c *Controller) syncEtcd(etcd *EtcdClient, baseCtx context.Context) error {
+	ctx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
+	defer cancel()
+	return etcd.Sync(ctx)
+}
+
+func (c *Controller) reconcileEtcd(etcd *EtcdClient, baseCtx context.Context) error {
 	nodes := make(map[string]struct{})
 	for _, node := range c.informer.GetIndexer().List() {
 		nodes[node.(*v1.Node).ObjectMeta.Name] = struct{}{}
@@ -156,9 +178,7 @@ func (c *Controller) reconcileEtcd(key string, etcd *EtcdClient, baseCtx context
 		}
 	}
 
-	ctx, cancel = context.WithTimeout(baseCtx, 5*time.Second)
-	defer cancel()
-	return etcd.Sync(ctx)
+	return c.syncEtcd(etcd, baseCtx)
 }
 
 func (c *Controller) handleErr(err error, key interface{}) {
