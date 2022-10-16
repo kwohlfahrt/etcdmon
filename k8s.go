@@ -89,7 +89,9 @@ func (c *Controller) Run(workers int, ctx context.Context) {
 		return
 	}
 	defer etcd.Close()
+	// TODO: Don't unnecessarily sync the initial pods
 
+	c.reconcileEtcd(etcd, ctx)
 	for i := 0; i < workers; i++ {
 		go wait.Until(func() {
 			key, quit := c.queue.Get()
