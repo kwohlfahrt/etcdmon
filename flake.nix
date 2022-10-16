@@ -14,7 +14,7 @@
       in {
         etcdmon = pkgs.buildGo119Module {
           pname = "etcdmon";
-          version = "0.0.1";
+          version = "0.2.0";
           src = ./.;
           vendorSha256 = "sha256-hk0wfcoPx2OGUCh6Fh55S2P3ZsAfCM1ihYyR7iSSV40";
 
