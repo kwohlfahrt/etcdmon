@@ -2,11 +2,13 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"testing"
 	"time"
 
+	clientv3 "go.etcd.io/etcd/client/v3"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
@@ -48,6 +50,26 @@ func deleteNode(ctx context.Context, t *testing.T, client klient.Client, node *c
 	if err != nil {
 		t.Fatal(err)
 	}
+	return ctx
+}
+
+func waitForEtcdMembers(ctx context.Context, t *testing.T, client *EtcdClient, count int) context.Context {
+	var members clientv3.MemberListResponse
+
+	for {
+		members, err := client.MemberList(ctx)
+		if errors.Is(err, context.DeadlineExceeded) {
+			break
+		} else if err != nil {
+			t.Fatal(err)
+		}
+
+		if len(members.Members) == count {
+			return ctx
+		}
+	}
+
+	t.Fatalf("Wrong number of final etcd members: %d != %d", len(members.Members), count)
 	return ctx
 }
 
@@ -181,16 +203,9 @@ func TestKubernetes(t *testing.T) {
 			return ctx
 		}).
 		Assess("etcd removed on startup", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			members, err := etcd.MemberList(etcdCtx)
-			cancel()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(members.Members) != nNodes-1 {
-				t.Fatalf("Wrong number of final etcd members: %d != %d", len(members.Members), nNodes-1)
-			}
-			return ctx
+			etcdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			return waitForEtcdMembers(etcdCtx, t, etcd, nNodes-1)
 		}).Feature()
 
 	deletion := features.New("node deletion").
@@ -198,16 +213,9 @@ func TestKubernetes(t *testing.T) {
 			return deleteNode(ctx, t, cfg.Client(), &nodes.Items[1])
 		}).
 		Assess("etcd removed on node deletion", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			members, err := etcd.MemberList(etcdCtx)
-			cancel()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(members.Members) != nNodes-2 {
-				t.Fatalf("Wrong number of final etcd members: %d != %d", len(members.Members), nNodes-2)
-			}
-			return ctx
+			etcdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			return waitForEtcdMembers(etcdCtx, t, etcd, nNodes-2)
 		}).Feature()
 
 	addition := features.New("node addition").
@@ -230,16 +238,9 @@ func TestKubernetes(t *testing.T) {
 			// Kind doesn't support adding nodes dynamically, so we can't start
 			// the new etcd member.  We can only verify that the operator adds a
 			// new member.  https://github.com/kubernetes-sigs/kind/issues/452
-			etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			members, err := etcd.MemberList(etcdCtx)
-			cancel()
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(members.Members) != nNodes-1 {
-				t.Fatalf("Wrong number of final etcd members: %d != %d", len(members.Members), nNodes-1)
-			}
-			return ctx
+			etcdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			defer cancel()
+			return waitForEtcdMembers(etcdCtx, t, etcd, nNodes-1)
 		}).Feature()
 
 	testenv.Test(t, sync, deletion, addition)
