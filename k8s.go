@@ -215,16 +215,13 @@ func (c *Controller) handleErr(err error, key interface{}) {
 }
 
 func (c *Controller) EtcdEndpoints() []string {
-	pods := c.podInformer.GetIndexer().List()
+	nodes := c.informer.GetIndexer().List()
 
 	endpoints := []string{}
-	for _, pod := range pods {
-		endpoint, ok := pod.(*v1.Pod).ObjectMeta.Annotations["kubeadm.kubernetes.io/etcd.advertise-client-urls"]
-		if !ok {
-			continue
-		}
+	for _, node := range nodes {
+		endpoint := fmt.Sprintf("https://%s:2379", node.(*v1.Node).ObjectMeta.Name)
 		endpoints = append(endpoints, endpoint)
 	}
-	klog.Infof("Found etcd endpoints %s from pod annotations\n", strings.Join(endpoints, ","))
+	klog.Infof("Found etcd endpoints %s from node names\n", strings.Join(endpoints, ","))
 	return endpoints
 }
