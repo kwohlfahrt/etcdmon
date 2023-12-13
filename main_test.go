@@ -80,7 +80,9 @@ func waitForEtcdMembers(ctx context.Context, t *testing.T, client *EtcdClient, c
 	var members clientv3.MemberListResponse
 
 	for {
-		members, err := client.MemberList(ctx)
+		etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		members, err := client.MemberList(etcdCtx)
+		cancel()
 		if errors.Is(err, context.DeadlineExceeded) {
 			break
 		} else if err != nil {
@@ -190,9 +192,7 @@ func TestKubernetes(t *testing.T) {
 		}).
 		Assess("etcd removed on startup", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			etcd := ctx.Value(contextKey("etcd")).(*EtcdClient)
-			etcdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-			defer cancel()
-			return waitForEtcdMembers(etcdCtx, t, etcd, nNodes-1)
+			return waitForEtcdMembers(ctx, t, etcd, nNodes-1)
 		}).Feature()
 
 	deletion := features.New("node deletion").
@@ -201,9 +201,7 @@ func TestKubernetes(t *testing.T) {
 		}).
 		Assess("etcd removed on node deletion", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			etcd := ctx.Value(contextKey("etcd")).(*EtcdClient)
-			etcdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-			defer cancel()
-			return waitForEtcdMembers(etcdCtx, t, etcd, nNodes-2)
+			return waitForEtcdMembers(ctx, t, etcd, nNodes-2)
 		}).Feature()
 
 	addition := features.New("node addition").
@@ -227,9 +225,7 @@ func TestKubernetes(t *testing.T) {
 			// the new etcd member.  We can only verify that the operator adds a
 			// new member.  https://github.com/kubernetes-sigs/kind/issues/452
 			etcd := ctx.Value(contextKey("etcd")).(*EtcdClient)
-			etcdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
-			defer cancel()
-			return waitForEtcdMembers(etcdCtx, t, etcd, nNodes-1)
+			return waitForEtcdMembers(ctx, t, etcd, nNodes-1)
 		}).Feature()
 
 	testenv.Test(t, sync, deletion, addition)
