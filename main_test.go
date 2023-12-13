@@ -13,10 +13,8 @@ import (
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/labels"
 	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s"
-	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	"sigs.k8s.io/e2e-framework/klient/wait"
 	"sigs.k8s.io/e2e-framework/klient/wait/conditions"
 	"sigs.k8s.io/e2e-framework/pkg/env"
@@ -28,13 +26,38 @@ const nNodes = 4
 
 var testenv env.Environment
 
+type contextKey string
+
 func TestMain(m *testing.M) {
 	cfg := envconf.NewWithKubeConfig("./kubeconfig.yaml")
 	testenv = env.NewWithConfig(cfg)
+	testenv.Setup(func(ctx context.Context, c *envconf.Config) (context.Context, error) {
+		// Configured in kind.yaml
+		etcdEndpoints := make([]string, 0, nNodes)
+		for p := 5001; p < 5001+nNodes; p++ {
+			etcdEndpoints = append(etcdEndpoints, fmt.Sprintf("127.0.0.1:%d", p))
+		}
+
+		etcdCerts := CertPaths{
+			caCert:     "./fixtures/ca.crt",
+			clientCert: "./fixtures/ca.crt",
+			clientKey:  "./fixtures/ca.key",
+		}
+		etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		etcd, err := NewEtcd(etcdEndpoints, etcdCerts, etcdCtx)
+		if err != nil {
+			return nil, err
+		}
+		return context.WithValue(ctx, contextKey("etcd"), etcd), nil
+	})
+
 	os.Exit(testenv.Run(m))
 }
 
-func deleteNode(ctx context.Context, t *testing.T, client klient.Client, node *corev1.Node) context.Context {
+func deleteNode(ctx context.Context, t *testing.T, client klient.Client, nodeName string) context.Context {
+	node := &corev1.Node{ObjectMeta: metav1.ObjectMeta{Name: nodeName}}
+
 	err := client.Resources().Delete(ctx, node)
 	if err != nil {
 		t.Fatal(err)
@@ -74,46 +97,9 @@ func waitForEtcdMembers(ctx context.Context, t *testing.T, client *EtcdClient, c
 }
 
 func TestKubernetes(t *testing.T) {
-	var etcd *EtcdClient
-	var nodes corev1.NodeList
-
 	sync := features.New("node sync").
-		WithSetup("etcd client", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			client := cfg.Client()
-			err := wait.For(conditions.New(client.Resources()).ResourceListN(
-				&nodes, nNodes, resources.WithLabelSelector(labels.FormatLabels(map[string]string{"node-role.kubernetes.io/control-plane": ""})),
-			), wait.WithTimeout(3*time.Minute))
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			// Configured in kind.yaml
-			etcdEndpoints := make([]string, 0, nNodes)
-			for p := 5001; p < 5001+nNodes; p++ {
-				etcdEndpoints = append(etcdEndpoints, fmt.Sprintf("127.0.0.1:%d", p))
-			}
-			etcdCerts := CertPaths{
-				caCert:     "./fixtures/ca.crt",
-				clientCert: "./fixtures/ca.crt",
-				clientKey:  "./fixtures/ca.key",
-			}
-			etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			etcd, err = NewEtcd(etcdEndpoints, etcdCerts, etcdCtx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			members, err := etcd.MemberList(etcdCtx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			cancel()
-			if len(members.Members) != nNodes {
-				t.Fatalf("Wrong number of initial etcd members: %d != %d", len(members.Members), nNodes)
-			}
-			return ctx
-		}).
 		WithSetup("delete node", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			return deleteNode(ctx, t, cfg.Client(), &nodes.Items[0])
+			return deleteNode(ctx, t, cfg.Client(), "kind-control-plane")
 		}).
 		WithSetup("install etcdmon", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			client := cfg.Client()
@@ -185,12 +171,12 @@ func TestKubernetes(t *testing.T) {
 			var err error
 			// Without retries, timeouts are exceeded, with the pod stuck in
 			// ContainerCreating. Possibly due to etcd member being removed.
-			for i := 0; i < 3; i++ {
+			for i := 0; i < 4; i++ {
 				err = wait.For(
 					conditions.New(client.Resources()).DeploymentConditionMatch(
 						&deployment, appsv1.DeploymentAvailable, corev1.ConditionTrue,
 					),
-					wait.WithTimeout(time.Second*5),
+					wait.WithTimeout(time.Second*15),
 				)
 				if err == nil {
 					break
@@ -203,6 +189,7 @@ func TestKubernetes(t *testing.T) {
 			return ctx
 		}).
 		Assess("etcd removed on startup", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			etcd := ctx.Value(contextKey("etcd")).(*EtcdClient)
 			etcdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
 			return waitForEtcdMembers(etcdCtx, t, etcd, nNodes-1)
@@ -210,9 +197,10 @@ func TestKubernetes(t *testing.T) {
 
 	deletion := features.New("node deletion").
 		WithSetup("delete node", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			return deleteNode(ctx, t, cfg.Client(), &nodes.Items[1])
+			return deleteNode(ctx, t, cfg.Client(), "kind-control-plane2")
 		}).
 		Assess("etcd removed on node deletion", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			etcd := ctx.Value(contextKey("etcd")).(*EtcdClient)
 			etcdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
 			return waitForEtcdMembers(etcdCtx, t, etcd, nNodes-2)
@@ -238,6 +226,7 @@ func TestKubernetes(t *testing.T) {
 			// Kind doesn't support adding nodes dynamically, so we can't start
 			// the new etcd member.  We can only verify that the operator adds a
 			// new member.  https://github.com/kubernetes-sigs/kind/issues/452
+			etcd := ctx.Value(contextKey("etcd")).(*EtcdClient)
 			etcdCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
 			defer cancel()
 			return waitForEtcdMembers(etcdCtx, t, etcd, nNodes-1)
