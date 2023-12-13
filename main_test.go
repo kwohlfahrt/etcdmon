@@ -12,6 +12,7 @@ import (
 	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
+	"sigs.k8s.io/e2e-framework/klient"
 	"sigs.k8s.io/e2e-framework/klient/k8s"
 	"sigs.k8s.io/e2e-framework/klient/k8s/resources"
 	"sigs.k8s.io/e2e-framework/klient/wait"
@@ -29,6 +30,25 @@ func TestMain(m *testing.M) {
 	cfg := envconf.NewWithKubeConfig("./kubeconfig.yaml")
 	testenv = env.NewWithConfig(cfg)
 	os.Exit(testenv.Run(m))
+}
+
+func deleteNode(ctx context.Context, t *testing.T, client klient.Client, node *corev1.Node) context.Context {
+	err := client.Resources().Delete(ctx, node)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Try twice, to give the load-balancer a chance to detect the downed node
+	for i := 0; i < 2; i++ {
+		err = wait.For(conditions.New(client.Resources()).ResourceDeleted(node), wait.WithTimeout(time.Second*10))
+		if err == nil {
+			break
+		}
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ctx
 }
 
 func TestKubernetes(t *testing.T) {
@@ -71,24 +91,7 @@ func TestKubernetes(t *testing.T) {
 			return ctx
 		}).
 		WithSetup("delete node", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			client := cfg.Client()
-			deletedNode := nodes.Items[0]
-			err := cfg.Client().Resources().Delete(context.TODO(), &deletedNode)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			// Try twice, to give the load-balancer a chance to detect the downed node
-			for i := 0; i < 2; i++ {
-				err = wait.For(conditions.New(client.Resources()).ResourceDeleted(&deletedNode), wait.WithTimeout(time.Minute*1))
-				if err == nil {
-					break
-				}
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			return ctx
+			return deleteNode(ctx, t, cfg.Client(), &nodes.Items[0])
 		}).
 		WithSetup("install etcdmon", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			client := cfg.Client()
@@ -192,24 +195,7 @@ func TestKubernetes(t *testing.T) {
 
 	deletion := features.New("node deletion").
 		WithSetup("delete node", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
-			client := cfg.Client()
-			deletedNode := nodes.Items[1]
-			err := cfg.Client().Resources().Delete(context.TODO(), &deletedNode)
-			if err != nil {
-				t.Fatal(err)
-			}
-
-			// Try twice, to give the load-balancer a chance to detect the downed node
-			for i := 0; i < 2; i++ {
-				err = wait.For(conditions.New(client.Resources()).ResourceDeleted(&deletedNode), wait.WithTimeout(time.Minute*1))
-				if err == nil {
-					break
-				}
-			}
-			if err != nil {
-				t.Fatal(err)
-			}
-			return ctx
+			return deleteNode(ctx, t, cfg.Client(), &nodes.Items[1])
 		}).
 		Assess("etcd removed on node deletion", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
 			etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
