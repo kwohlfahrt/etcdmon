@@ -161,14 +161,14 @@ func TestKubernetes(t *testing.T) {
 				}
 			}
 			var err error
-			// Without retries, timeouts are exceeded (even if the timeout is
-			// longer). Probably due to etcd member being removed.
-			for i := 0; i < 2; i++ {
+			// Without retries, timeouts are exceeded, with the pod stuck in
+			// ContainerCreating. Possibly due to etcd member being removed.
+			for i := 0; i < 3; i++ {
 				err = wait.For(
 					conditions.New(client.Resources()).DeploymentConditionMatch(
 						&deployment, appsv1.DeploymentAvailable, corev1.ConditionTrue,
 					),
-					wait.WithTimeout(time.Second*15),
+					wait.WithTimeout(time.Second*5),
 				)
 				if err == nil {
 					break
