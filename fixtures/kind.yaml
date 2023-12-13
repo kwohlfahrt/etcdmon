@@ -29,3 +29,4 @@ nodes:
   extraPortMappings:
   - containerPort: 2379
     hostPort: 5004
+- role: worker

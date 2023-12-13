@@ -32,6 +32,13 @@ func NewController(client *kubernetes.Clientset) *Controller {
 	})
 	informer := cache.NewSharedIndexInformer(watcher, &v1.Node{}, 0, cache.Indexers{})
 	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+		AddFunc: func(obj interface{}) {
+			key, err := cache.MetaNamespaceKeyFunc(obj)
+			if err == nil {
+				klog.Infof("Adding node %s", key)
+				queue.Add(key)
+			}
+		},
 		DeleteFunc: func(obj interface{}) {
 			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
 			if err == nil {
@@ -162,8 +169,16 @@ func (c *Controller) reconcileEtcd(etcd *EtcdClient, baseCtx context.Context) er
 		}
 	}
 
-	for k := range nodes {
-		klog.Warningf("Did not find etcd member for node %s\n", k)
+	for nodeName := range nodes {
+		// TODO: Check if we would exceed quorum by adding too many nodes
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		klog.V(2).Infof("Adding etcd member for new node %s\n", nodeName)
+		member, err := etcd.MemberAdd(ctx, nodeName)
+		if err != nil {
+			return err
+		}
+		klog.Infof("Added etcd member for new node %s (%x)\n", nodeName, member.Member.ID)
 	}
 	if len(orphanMembers) > len(members.Members)/2 {
 		klog.Errorf("%d out of %d members are missing nodes, which is more than quorum\n", len(orphanMembers), len(members.Members))

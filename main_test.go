@@ -134,11 +134,8 @@ func TestKubernetes(t *testing.T) {
 								}},
 							}},
 							ServiceAccountName: name,
-							Tolerations: []corev1.Toleration{
-								{Key: "node-role.kubernetes.io/control-plane", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule},
-								{Key: "node-role.kubernetes.io/master", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule},
-							},
-							NodeSelector: map[string]string{"node-role.kubernetes.io/control-plane": ""},
+							Tolerations:        []corev1.Toleration{{Key: "node-role.kubernetes.io/control-plane", Operator: corev1.TolerationOpExists, Effect: corev1.TaintEffectNoSchedule}},
+							NodeSelector:       map[string]string{"node-role.kubernetes.io/control-plane": ""},
 							Volumes: []corev1.Volume{{
 								Name: "etcd-certs",
 								VolumeSource: corev1.VolumeSource{
@@ -227,5 +224,37 @@ func TestKubernetes(t *testing.T) {
 			return ctx
 		}).Feature()
 
-	testenv.Test(t, sync, deletion)
+	addition := features.New("node addition").
+		WithSetup("label node as control-plane", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			nodes := corev1.NodeList{}
+			cfg.Client().Resources().List(ctx, &nodes)
+			for _, node := range nodes.Items {
+				if _, ok := node.Labels["node-role.kubernetes.io/control-plane"]; !ok {
+					cfg.Client().Resources().Label(&node, map[string]string{"node-role.kubernetes.io/control-plane": ""})
+					if err := cfg.Client().Resources().Update(ctx, &node); err != nil {
+						t.Fatal(err)
+					}
+					break
+				}
+			}
+
+			return ctx
+		}).
+		Assess("etcd member added for control-plane node", func(ctx context.Context, t *testing.T, cfg *envconf.Config) context.Context {
+			// Kind doesn't support adding nodes dynamically, so we can't start
+			// the new etcd member.  We can only verify that the operator adds a
+			// new member.  https://github.com/kubernetes-sigs/kind/issues/452
+			etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			members, err := etcd.MemberList(etcdCtx)
+			cancel()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(members.Members) != nNodes-1 {
+				t.Fatalf("Wrong number of final etcd members: %d != %d", len(members.Members), nNodes-1)
+			}
+			return ctx
+		}).Feature()
+
+	testenv.Test(t, sync, deletion, addition)
 }
