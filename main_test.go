@@ -18,7 +18,6 @@ import (
 	"sigs.k8s.io/e2e-framework/klient/wait/conditions"
 	"sigs.k8s.io/e2e-framework/pkg/env"
 	"sigs.k8s.io/e2e-framework/pkg/envconf"
-	"sigs.k8s.io/e2e-framework/pkg/envfuncs"
 	"sigs.k8s.io/e2e-framework/pkg/features"
 )
 
@@ -27,14 +26,8 @@ const nNodes = 4
 var testenv env.Environment
 
 func TestMain(m *testing.M) {
-	testenv = env.New()
-	kindClusterName := envconf.RandomName("etcdmon", 16)
-	testenv.Setup(
-		envfuncs.CreateKindClusterWithConfig(kindClusterName, "kindest/node:v1.24.2", "fixtures/kind.yaml"),
-	)
-	testenv.Finish(
-		envfuncs.DestroyKindCluster(kindClusterName),
-	)
+	cfg := envconf.NewWithKubeConfig("./kubeconfig.yaml")
+	testenv = env.NewWithConfig(cfg)
 	os.Exit(testenv.Run(m))
 }
 
@@ -131,8 +124,9 @@ func TestKubernetes(t *testing.T) {
 						ObjectMeta: metav1.ObjectMeta{Labels: labels},
 						Spec: corev1.PodSpec{
 							Containers: []corev1.Container{{
-								Name:  name,
-								Image: "localhost:5000/etcdmon",
+								Name:            name,
+								Image:           "etcdmon:latest",
+								ImagePullPolicy: "Never",
 								VolumeMounts: []corev1.VolumeMount{{
 									Name:      "etcd-certs",
 									MountPath: "/etc/kubernetes/pki/etcd",
