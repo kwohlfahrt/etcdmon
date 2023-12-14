@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -72,4 +73,8 @@ func (c EtcdClient) MemberList(ctx context.Context) (*etcd.MemberListResponse, e
 
 func (c EtcdClient) MemberRemove(ctx context.Context, id uint64) (*etcd.MemberRemoveResponse, error) {
 	return c.client.Cluster.MemberRemove(ctx, id)
+}
+
+func (c EtcdClient) MemberAdd(ctx context.Context, name string) (*etcd.MemberAddResponse, error) {
+	return c.client.Cluster.MemberAdd(ctx, []string{fmt.Sprintf("https://%s:2380", name)})
 }
