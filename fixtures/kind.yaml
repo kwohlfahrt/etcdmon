@@ -2,31 +2,6 @@ kind: Cluster
 apiVersion: kind.x-k8s.io/v1alpha4
 nodes:
 - role: control-plane
-  extraMounts:
-  - hostPath: ./fixtures/1/
-    containerPath: /etc/kubernetes/pki/etcd
   extraPortMappings:
-  - containerPort: 2379
+  - containerPort: 30790
     hostPort: 5001
-- role: control-plane
-  extraMounts:
-  - hostPath: ./fixtures/2/
-    containerPath: /etc/kubernetes/pki/etcd
-  extraPortMappings:
-  - containerPort: 2379
-    hostPort: 5002
-- role: control-plane
-  extraMounts:
-  - hostPath: ./fixtures/3/
-    containerPath: /etc/kubernetes/pki/etcd
-  extraPortMappings:
-  - containerPort: 2379
-    hostPort: 5003
-- role: control-plane
-  extraMounts:
-  - hostPath: ./fixtures/4/
-    containerPath: /etc/kubernetes/pki/etcd
-  extraPortMappings:
-  - containerPort: 2379
-    hostPort: 5004
-- role: worker

@@ -11,9 +11,9 @@ import (
 
 var namespace = flag.String("namespace", "kube-system", "The namespace to watch for pods in (default: kube-system)")
 var selector = flag.String("selector", "tier=control-plane,component=etcd", "The label selector for etcd pods")
-var caCert = flag.String("ca-cert", "/etc/kubernetes/pki/etcd/ca.crt", "Path to the etcd CA certificate")
-var clientCert = flag.String("client-cert", "/etc/kubernetes/pki/etcd/server.crt", "Path to the etcd client certificate")
-var clientKey = flag.String("client-key", "/etc/kubernetes/pki/etcd/server.key", "Path to the etcd client key")
+var caCert = flag.String("ca-cert", "", "Path to the etcd CA certificate")
+var clientCert = flag.String("client-cert", "", "Path to the etcd client certificate")
+var clientKey = flag.String("client-key", "", "Path to the etcd client key")
 
 func init() {
 	klog.InitFlags(nil)
