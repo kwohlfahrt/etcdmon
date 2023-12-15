@@ -18,41 +18,20 @@ import (
 )
 
 type Controller struct {
-	informer    cache.SharedIndexInformer
-	queue       workqueue.RateLimitingInterface
-	podInformer cache.SharedIndexInformer
+	queue    workqueue.RateLimitingInterface
+	informer cache.SharedIndexInformer
 }
 
 // NewController creates a new Controller.
-func NewController(client *kubernetes.Clientset) *Controller {
+func NewController(client *kubernetes.Clientset, namespace string, selector string) *Controller {
 	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 
-	watcher := cache.NewFilteredListWatchFromClient(client.CoreV1().RESTClient(), "nodes", "", func(options *metav1.ListOptions) {
-		options.LabelSelector = "node-role.kubernetes.io/control-plane="
-	})
-	informer := cache.NewSharedIndexInformer(watcher, &v1.Node{}, 0, cache.Indexers{})
+	podWatcher := cache.NewFilteredListWatchFromClient(
+		client.CoreV1().RESTClient(), "pods", namespace,
+		func(options *metav1.ListOptions) { options.LabelSelector = selector },
+	)
+	informer := cache.NewSharedIndexInformer(podWatcher, &v1.Pod{}, 0, cache.Indexers{})
 	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
-		AddFunc: func(obj interface{}) {
-			key, err := cache.MetaNamespaceKeyFunc(obj)
-			if err == nil {
-				klog.Infof("Adding node %s", key)
-				queue.Add(key)
-			}
-		},
-		DeleteFunc: func(obj interface{}) {
-			key, err := cache.DeletionHandlingMetaNamespaceKeyFunc(obj)
-			if err == nil {
-				klog.Infof("Deleting node %s", key)
-				queue.Add(key)
-			}
-		},
-	})
-
-	podWatcher := cache.NewFilteredListWatchFromClient(client.CoreV1().RESTClient(), "pods", "kube-system", func(options *metav1.ListOptions) {
-		options.LabelSelector = "component=etcd"
-	})
-	podInformer := cache.NewSharedIndexInformer(podWatcher, &v1.Pod{}, 0, cache.Indexers{})
-	podInformer.AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			key, err := cache.MetaNamespaceKeyFunc(obj)
 			if err == nil {
@@ -60,13 +39,16 @@ func NewController(client *kubernetes.Clientset) *Controller {
 				queue.Add(key)
 			}
 		},
+		DeleteFunc: func(obj interface{}) {
+			key, err := cache.MetaNamespaceKeyFunc(obj)
+			if err == nil {
+				klog.Infof("Deleting pod %s", key)
+				queue.Add(key)
+			}
+		},
 	})
 
-	return &Controller{
-		informer:    informer,
-		podInformer: podInformer,
-		queue:       queue,
-	}
+	return &Controller{informer: informer, queue: queue}
 }
 
 func (c *Controller) Run(workers int, ctx context.Context) {
@@ -75,9 +57,8 @@ func (c *Controller) Run(workers int, ctx context.Context) {
 
 	klog.Info("starting etcd monitor controller")
 	go c.informer.Run(ctx.Done())
-	go c.podInformer.Run(ctx.Done())
 
-	if !cache.WaitForNamedCacheSync("etcd-monitor", ctx.Done(), c.informer.HasSynced, c.podInformer.HasSynced) {
+	if !cache.WaitForNamedCacheSync("etcd-monitor", ctx.Done(), c.informer.HasSynced) {
 		runtime.HandleError(fmt.Errorf("timed out waiting for cache sync"))
 		return
 	}
@@ -116,20 +97,7 @@ func (c *Controller) Run(workers int, ctx context.Context) {
 }
 
 func (c *Controller) processItem(key string, etcd *EtcdClient, baseCtx context.Context) error {
-	// TODO: Implement a better way of figuring out what informer the key belongs to
-	_, exists, err := c.podInformer.GetIndexer().GetByKey(key)
-	if err != nil {
-		klog.Errorf("Failed to fetch object with key %s from store: %v", key, err)
-		return err
-	}
-
-	if exists {
-		// Process new pod
-		return c.syncEtcd(etcd, baseCtx)
-	}
-
-	// Otherwise, was a deleted node (or pod which went stale)
-	_, _, err = c.informer.GetIndexer().GetByKey(key)
+	_, _, err := c.informer.GetIndexer().GetByKey(key)
 	if err != nil {
 		klog.Errorf("Failed to fetch object with key %s from store: %v", key, err)
 		return err
