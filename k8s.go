@@ -18,12 +18,13 @@ import (
 )
 
 type Controller struct {
-	queue    workqueue.RateLimitingInterface
-	informer cache.SharedIndexInformer
+	queue     workqueue.RateLimitingInterface
+	informer  cache.SharedIndexInformer
+	etcdCerts CertPaths
 }
 
 // NewController creates a new Controller.
-func NewController(client *kubernetes.Clientset, namespace string, selector string) *Controller {
+func NewController(client *kubernetes.Clientset, namespace string, selector string, certs CertPaths) *Controller {
 	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 
 	podWatcher := cache.NewFilteredListWatchFromClient(
@@ -48,7 +49,7 @@ func NewController(client *kubernetes.Clientset, namespace string, selector stri
 		},
 	})
 
-	return &Controller{informer: informer, queue: queue}
+	return &Controller{informer: informer, queue: queue, etcdCerts: certs}
 }
 
 func (c *Controller) Run(workers int, ctx context.Context) {
@@ -64,13 +65,7 @@ func (c *Controller) Run(workers int, ctx context.Context) {
 	}
 
 	etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	// TODO: Use own certs, don't piggyback off etcd's
-	etcdCerts := CertPaths{
-		caCert:     "/etc/kubernetes/pki/etcd/ca.crt",
-		clientCert: "/etc/kubernetes/pki/etcd/server.crt",
-		clientKey:  "/etc/kubernetes/pki/etcd/server.key",
-	}
-	etcd, err := NewEtcd(c.EtcdEndpoints(), etcdCerts, etcdCtx)
+	etcd, err := NewEtcd(c.EtcdEndpoints(), c.etcdCerts, etcdCtx)
 	cancel()
 	if err != nil {
 		runtime.HandleError(err)

@@ -25,23 +25,28 @@ type CertPaths struct {
 }
 
 func NewEtcd(endpoints []string, certs CertPaths, ctx context.Context) (*EtcdClient, error) {
-	ca := x509.NewCertPool()
-	caCert, err := os.ReadFile(certs.caCert)
-	if err != nil {
-		return nil, err
-	}
-	if ok := ca.AppendCertsFromPEM(caCert); !ok {
-		klog.Fatalf("Unable to parse cert from %s", certs.caCert)
+	var ca *x509.CertPool = nil
+	if certs.caCert != "" {
+		ca = x509.NewCertPool()
+		caCert, err := os.ReadFile(certs.caCert)
+		if err != nil {
+			return nil, err
+		}
+		if ok := ca.AppendCertsFromPEM(caCert); !ok {
+			klog.Fatalf("Unable to parse cert from %s", certs.caCert)
+		}
 	}
 
-	clientCert, err := tls.LoadX509KeyPair(certs.clientCert, certs.clientKey)
-	if err != nil {
-		return nil, err
+	var clientCerts []tls.Certificate = nil
+	if certs.clientCert != "" {
+		clientCert, err := tls.LoadX509KeyPair(certs.clientCert, certs.clientKey)
+		if err != nil {
+			return nil, err
+		}
+		clientCerts = []tls.Certificate{clientCert}
 	}
-	etcdTls := tls.Config{
-		Certificates: []tls.Certificate{clientCert},
-		RootCAs:      ca,
-	}
+
+	etcdTls := tls.Config{RootCAs: ca, Certificates: clientCerts}
 	client, err := etcd.New(etcd.Config{
 		Endpoints:   endpoints,
 		DialTimeout: 2 * time.Second,
