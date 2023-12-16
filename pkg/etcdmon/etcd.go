@@ -1,4 +1,4 @@
-package main
+package etcdmon
 
 import (
 	"context"
@@ -19,27 +19,27 @@ type EtcdClient struct {
 }
 
 type CertPaths struct {
-	caCert     string
-	clientCert string
-	clientKey  string
+	CaCert     string
+	ClientCert string
+	ClientKey  string
 }
 
 func NewEtcd(endpoints []string, certs CertPaths, ctx context.Context) (*EtcdClient, error) {
 	var ca *x509.CertPool = nil
-	if certs.caCert != "" {
+	if certs.CaCert != "" {
 		ca = x509.NewCertPool()
-		caCert, err := os.ReadFile(certs.caCert)
+		caCert, err := os.ReadFile(certs.CaCert)
 		if err != nil {
 			return nil, err
 		}
 		if ok := ca.AppendCertsFromPEM(caCert); !ok {
-			klog.Fatalf("Unable to parse cert from %s", certs.caCert)
+			klog.Fatalf("Unable to parse cert from %s", certs.CaCert)
 		}
 	}
 
 	var clientCerts []tls.Certificate = nil
-	if certs.clientCert != "" {
-		clientCert, err := tls.LoadX509KeyPair(certs.clientCert, certs.clientKey)
+	if certs.ClientCert != "" {
+		clientCert, err := tls.LoadX509KeyPair(certs.ClientCert, certs.ClientKey)
 		if err != nil {
 			return nil, err
 		}

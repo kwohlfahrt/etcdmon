@@ -1,4 +1,4 @@
-package main
+package e2e
 
 import (
 	"context"
@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/kwohlfahrt/etcdmon/pkg/etcdmon"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -289,7 +291,7 @@ func stopEtcdmon(name string) func(ctx context.Context, t *testing.T, c *envconf
 
 func waitForEtcd(count int) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		etcd, err := NewEtcd([]string{"http://localhost:5001"}, CertPaths{}, ctx)
+		etcd, err := etcdmon.NewEtcd([]string{"http://localhost:5001"}, etcdmon.CertPaths{}, ctx)
 		if err != nil {
 			t.Fatal(err)
 		}

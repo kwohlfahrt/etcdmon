@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 
+	"github.com/kwohlfahrt/etcdmon/pkg/etcdmon"
+
 	flag "github.com/spf13/pflag"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
@@ -32,12 +34,12 @@ func main() {
 		panic(err.Error())
 	}
 
-	certs := CertPaths{
-		caCert:     *caCert,
-		clientCert: *clientCert,
-		clientKey:  *clientKey,
+	certs := etcdmon.CertPaths{
+		CaCert:     *caCert,
+		ClientCert: *clientCert,
+		ClientKey:  *clientKey,
 	}
 
-	controller := NewController(clientset, *namespace, *selector, certs)
+	controller := etcdmon.NewController(clientset, *namespace, *selector, certs)
 	controller.Run(1, context.Background())
 }
