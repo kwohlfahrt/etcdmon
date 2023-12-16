@@ -13,6 +13,7 @@ import (
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	rbacv1 "k8s.io/api/rbac/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -62,6 +63,15 @@ func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 				Selector:            &metav1.LabelSelector{MatchLabels: labels},
 				ServiceName:         dnsService.Name,
 				PodManagementPolicy: appsv1.ParallelPodManagement,
+				VolumeClaimTemplates: []corev1.PersistentVolumeClaim{{
+					ObjectMeta: metav1.ObjectMeta{Name: "etcd"},
+					Spec: corev1.PersistentVolumeClaimSpec{
+						AccessModes: []corev1.PersistentVolumeAccessMode{corev1.ReadWriteOnce},
+						Resources: corev1.ResourceRequirements{Requests: corev1.ResourceList{
+							corev1.ResourceStorage: resource.MustParse("128Mi"),
+						}},
+					},
+				}},
 				Template: corev1.PodTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{Labels: labels},
 					Spec: corev1.PodSpec{
@@ -75,8 +85,9 @@ func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 								fmt.Sprintf("--initial-cluster=%s", strings.Join(initialCluster, ",")),
 								"--listen-peer-urls=http://$(POD_IP):2380",
 								"--initial-advertise-peer-urls=http://$(POD_IP):2380",
-								"--listen-client-urls=http://$(POD_IP):2379",
+								"--listen-client-urls=http://0.0.0.0:2379",
 								"--advertise-client-urls=http://$(POD_IP):2379",
+								"--data-dir=/var/lib/etcd",
 							},
 							Ports: []corev1.ContainerPort{
 								{Name: "client", ContainerPort: 2379},
@@ -101,7 +112,7 @@ func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 									},
 								},
 							},
-
+							VolumeMounts: []corev1.VolumeMount{{Name: "etcd", MountPath: "/var/lib/etcd"}},
 							Env: []corev1.EnvVar{{
 								Name: "POD_IP",
 								ValueFrom: &corev1.EnvVarSource{
