@@ -6,25 +6,24 @@ import (
 	"strings"
 	"time"
 
-	v1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/klog/v2"
 )
 
-func (c *Controller) syncEtcd(etcd *EtcdClient, baseCtx context.Context) error {
-	ctx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
-	defer cancel()
-	return etcd.Sync(ctx)
-}
-
-func (c *Controller) reconcileEtcd(etcd *EtcdClient, baseCtx context.Context) error {
-	nodes := make(map[string]struct{})
-	for _, node := range c.informer.GetIndexer().List() {
-		nodes[node.(*v1.Node).ObjectMeta.Name] = struct{}{}
+func (c *Controller) reconcileEtcd(baseCtx context.Context) error {
+	pods := make(map[string]struct{})
+	podList, err := c.pods.Lister().List(labels.Everything())
+	if err != nil {
+		return err
 	}
-	klog.Infof("There are %d control-plane nodes in the cluster\n", len(nodes))
+
+	for _, pod := range podList {
+		pods[pod.Name] = struct{}{}
+	}
+	klog.Infof("There are %d pods in the cluster\n", len(pods))
 
 	ctx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
-	members, err := etcd.MemberList(ctx)
+	members, err := c.etcd.MemberList(ctx)
 	cancel()
 	if err != nil {
 		return err
@@ -33,20 +32,20 @@ func (c *Controller) reconcileEtcd(etcd *EtcdClient, baseCtx context.Context) er
 
 	orphanMembers := make(map[string]uint64)
 	for _, member := range members.Members {
-		if _, ok := nodes[member.Name]; ok {
+		if _, ok := pods[member.Name]; ok {
 			klog.Infof("Found node for etcd member %s\n", member.Name)
-			delete(nodes, member.Name)
+			delete(pods, member.Name)
 		} else {
 			orphanMembers[member.Name] = member.ID
 		}
 	}
 
-	for nodeName := range nodes {
+	for nodeName := range pods {
 		// TODO: Check if we would exceed quorum by adding too many nodes
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		klog.V(2).Infof("Adding etcd member for new node %s\n", nodeName)
-		member, err := etcd.MemberAdd(ctx, nodeName)
+		member, err := c.etcd.MemberAdd(ctx, []string{nodeName})
 		if err != nil {
 			return err
 		}
@@ -59,24 +58,27 @@ func (c *Controller) reconcileEtcd(etcd *EtcdClient, baseCtx context.Context) er
 	for k, id := range orphanMembers {
 		klog.Infof("Removing orphan etcd member %s (%x)\n", k, id)
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err := etcd.MemberRemove(ctx, id)
+		_, err := c.etcd.MemberRemove(ctx, id)
 		cancel()
 		if err != nil {
 			return err
 		}
 	}
 
-	return c.syncEtcd(etcd, baseCtx)
+	return nil
 }
 
-func (c *Controller) EtcdEndpoints() []string {
-	nodes := c.informer.GetIndexer().List()
+func (c *Controller) EtcdEndpoints() ([]string, error) {
+	pods, err := c.pods.Lister().List(labels.Everything())
+	if err != nil {
+		return nil, err
+	}
 
 	endpoints := []string{}
-	for _, node := range nodes {
-		endpoint := fmt.Sprintf("https://%s:2379", node.(*v1.Node).ObjectMeta.Name)
+	for _, pod := range pods {
+		endpoint := fmt.Sprintf("https://%s:2379", pod.Name)
 		endpoints = append(endpoints, endpoint)
 	}
 	klog.Infof("Found etcd endpoints %s from node names\n", strings.Join(endpoints, ","))
-	return endpoints
+	return endpoints, nil
 }

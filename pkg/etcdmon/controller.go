@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	v1 "k8s.io/api/core/v1"
+	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
 	"k8s.io/client-go/util/workqueue"
@@ -17,23 +17,28 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
+	corev1informers "k8s.io/client-go/informers/core/v1"
 )
 
 type Controller struct {
-	queue     workqueue.RateLimitingInterface
-	informer  cache.SharedIndexInformer
-	etcdCerts CertPaths
+	queue   workqueue.RateLimitingInterface
+	pods    corev1informers.PodInformer
+	factory informers.SharedInformerFactory
+
+	etcd EtcdClient
 }
 
-func NewController(client *kubernetes.Clientset, namespace string, selector string, certs CertPaths) *Controller {
+func NewController(client kubernetes.Interface, etcd EtcdClient, namespace string, selector string) *Controller {
 	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 
-	podWatcher := cache.NewFilteredListWatchFromClient(
-		client.CoreV1().RESTClient(), "pods", namespace,
-		func(options *metav1.ListOptions) { options.LabelSelector = selector },
+	factory := informers.NewSharedInformerFactoryWithOptions(
+		client,
+		0*time.Second,
+		informers.WithNamespace(namespace),
+		informers.WithTweakListOptions(func(opts *metav1.ListOptions) { opts.LabelSelector = selector }),
 	)
-	informer := cache.NewSharedIndexInformer(podWatcher, &v1.Pod{}, 0, cache.Indexers{})
-	informer.AddEventHandler(cache.ResourceEventHandlerFuncs{
+	pods := factory.Core().V1().Pods()
+	pods.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
 			key, err := cache.MetaNamespaceKeyFunc(obj)
 			if err == nil {
@@ -50,32 +55,33 @@ func NewController(client *kubernetes.Clientset, namespace string, selector stri
 		},
 	})
 
-	return &Controller{informer: informer, queue: queue, etcdCerts: certs}
+	return &Controller{pods: pods, factory: factory, queue: queue, etcd: etcd}
 }
 
-func (c *Controller) Run(workers int, ctx context.Context) {
+func (c *Controller) Run(ctx context.Context, etcdCerts CertPaths, workers int) error {
 	defer runtime.HandleCrash()
 	defer c.queue.ShutDown()
 
 	klog.Info("starting etcd monitor controller")
-	go c.informer.Run(ctx.Done())
+	c.factory.Start(ctx.Done())
 
-	if !cache.WaitForNamedCacheSync("etcd-monitor", ctx.Done(), c.informer.HasSynced) {
-		runtime.HandleError(fmt.Errorf("timed out waiting for cache sync"))
-		return
+	for v, ok := range c.factory.WaitForCacheSync(ctx.Done()) {
+		if !ok {
+			return fmt.Errorf("cache failed to sync: %v", v)
+		} else {
+			klog.V(2).Infof("synced cache: %v", v)
+		}
 	}
 
-	etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	etcd, err := NewEtcd(c.EtcdEndpoints(), c.etcdCerts, etcdCtx)
-	cancel()
+	endpoints, err := c.EtcdEndpoints()
 	if err != nil {
-		runtime.HandleError(err)
-		return
+		return err
 	}
-	defer etcd.Close()
-	// TODO: Don't unnecessarily sync the initial pods
+	if err := c.etcd.Start(ctx, endpoints...); err != nil {
+		return err
+	}
+	defer c.etcd.Close()
 
-	c.reconcileEtcd(etcd, ctx)
 	for i := 0; i < workers; i++ {
 		go wait.Until(func() {
 			key, quit := c.queue.Get()
@@ -83,23 +89,24 @@ func (c *Controller) Run(workers int, ctx context.Context) {
 				return
 			}
 			defer c.queue.Done(key)
-			err := c.processItem(key.(string), etcd, ctx)
+			err := c.processItem(ctx, key.(string))
 			c.handleErr(err, key)
 		}, 0, ctx.Done())
 	}
 
 	<-ctx.Done()
 	klog.Info("stopping etcd monitor controller")
+	return nil
 }
 
-func (c *Controller) processItem(key string, etcd *EtcdClient, baseCtx context.Context) error {
-	_, _, err := c.informer.GetIndexer().GetByKey(key)
+func (c *Controller) processItem(ctx context.Context, key string) error {
+	_, _, err := c.pods.Informer().GetIndexer().GetByKey(key)
 	if err != nil {
 		klog.Errorf("Failed to fetch object with key %s from store: %v", key, err)
 		return err
 	}
 
-	return c.reconcileEtcd(etcd, baseCtx)
+	return c.reconcileEtcd(ctx)
 }
 
 func (c *Controller) handleErr(err error, key interface{}) {

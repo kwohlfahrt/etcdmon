@@ -291,7 +291,11 @@ func stopEtcdmon(name string) func(ctx context.Context, t *testing.T, c *envconf
 
 func waitForEtcd(count int) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		etcd, err := etcdmon.NewEtcd([]string{"http://localhost:5001"}, etcdmon.CertPaths{}, ctx)
+		etcd, err := etcdmon.NewEtcd(etcdmon.CertPaths{})
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = etcd.Start(ctx, "http://localhost:5001")
 		if err != nil {
 			t.Fatal(err)
 		}

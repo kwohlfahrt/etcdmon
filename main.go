@@ -40,6 +40,10 @@ func main() {
 		ClientKey:  *clientKey,
 	}
 
-	controller := etcdmon.NewController(clientset, *namespace, *selector, certs)
-	controller.Run(1, context.Background())
+	etcd, err := etcdmon.NewEtcd(certs)
+	if err != nil {
+		panic(err.Error())
+	}
+	controller := etcdmon.NewController(clientset, etcd, *namespace, *selector)
+	controller.Run(context.Background(), certs, 1)
 }

@@ -4,18 +4,21 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
-	"fmt"
 	"os"
-	"strings"
 	"time"
 
-	etcd "go.etcd.io/etcd/client/v3"
+	clientv3 "go.etcd.io/etcd/client/v3"
 
 	"k8s.io/klog/v2"
 )
 
-type EtcdClient struct {
-	client *etcd.Client
+type EtcdClient interface {
+	Start(ctx context.Context, endpoints ...string) error
+	MemberList(ctx context.Context) (*clientv3.MemberListResponse, error)
+	MemberAdd(ctx context.Context, urls []string) (*clientv3.MemberAddResponse, error)
+	MemberRemove(ctx context.Context, id uint64) (*clientv3.MemberRemoveResponse, error)
+	SetEndpoints(endpoints ...string)
+	Close() error
 }
 
 type CertPaths struct {
@@ -24,7 +27,12 @@ type CertPaths struct {
 	ClientKey  string
 }
 
-func NewEtcd(endpoints []string, certs CertPaths, ctx context.Context) (*EtcdClient, error) {
+type client struct {
+	config clientv3.Config
+	client *clientv3.Client
+}
+
+func NewEtcd(certs CertPaths) (EtcdClient, error) {
 	var ca *x509.CertPool = nil
 	if certs.CaCert != "" {
 		ca = x509.NewCertPool()
@@ -47,39 +55,39 @@ func NewEtcd(endpoints []string, certs CertPaths, ctx context.Context) (*EtcdCli
 	}
 
 	etcdTls := tls.Config{RootCAs: ca, Certificates: clientCerts}
-	client, err := etcd.New(etcd.Config{
-		Endpoints:   endpoints,
-		DialTimeout: 2 * time.Second,
-		TLS:         &etcdTls,
-	})
-	if err != nil {
-		return nil, err
+	etcd := &client{
+		config: clientv3.Config{DialTimeout: 2 * time.Second, TLS: &etcdTls},
 	}
-
-	return &EtcdClient{client: client}, nil
+	return etcd, nil
 }
 
-func (c EtcdClient) Close() {
-	c.client.Close()
-}
-
-// Update the list of etcd endpoints the client uses
-func (c EtcdClient) Sync(ctx context.Context) error {
-	if err := c.client.Sync(ctx); err != nil {
+func (c *client) Start(ctx context.Context, endpoints ...string) error {
+	c.config.Endpoints = endpoints
+	c.config.Context = ctx
+	x, err := clientv3.New(c.config)
+	if err != nil {
 		return err
 	}
-	klog.Infof("Found etcd endpoints %s from etcd cluster\n", strings.Join(c.client.Endpoints(), ","))
+	c.client = x
 	return nil
 }
 
-func (c EtcdClient) MemberList(ctx context.Context) (*etcd.MemberListResponse, error) {
-	return c.client.Cluster.MemberList(ctx)
+func (c *client) Close() error {
+	return c.client.Close()
 }
 
-func (c EtcdClient) MemberRemove(ctx context.Context, id uint64) (*etcd.MemberRemoveResponse, error) {
-	return c.client.Cluster.MemberRemove(ctx, id)
+func (c *client) MemberAdd(ctx context.Context, urls []string) (*clientv3.MemberAddResponse, error) {
+	return c.client.MemberAdd(ctx, urls)
 }
 
-func (c EtcdClient) MemberAdd(ctx context.Context, name string) (*etcd.MemberAddResponse, error) {
-	return c.client.Cluster.MemberAdd(ctx, []string{fmt.Sprintf("https://%s:2380", name)})
+func (c *client) MemberList(ctx context.Context) (*clientv3.MemberListResponse, error) {
+	return c.client.MemberList(ctx)
+}
+
+func (c *client) MemberRemove(ctx context.Context, id uint64) (*clientv3.MemberRemoveResponse, error) {
+	return c.client.MemberRemove(ctx, id)
+}
+
+func (c *client) SetEndpoints(endpoints ...string) {
+	c.client.SetEndpoints(endpoints...)
 }
