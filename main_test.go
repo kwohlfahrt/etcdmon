@@ -10,6 +10,7 @@ import (
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/apimachinery/pkg/util/intstr"
@@ -29,11 +30,10 @@ func TestMain(m *testing.M) {
 	os.Exit(testenv.Run(m))
 }
 
-func startEtcd(name string) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client := c.Client()
 
-		replicas := int32(3)
 		initialCluster := make([]string, 0, replicas)
 		for i := int32(0); i < replicas; i++ {
 			hostname := fmt.Sprintf("%s-%d", name, i)
@@ -128,21 +128,18 @@ func startEtcd(name string) func(ctx context.Context, t *testing.T, c *envconf.C
 			},
 		}
 
-		if err := client.Resources().Create(ctx, &dnsService); err != nil {
-			t.Fatal(err)
-		}
-		if err := client.Resources().Create(ctx, &statefulSet); err != nil {
-			t.Fatal(err)
-		}
-		if err := client.Resources().Create(ctx, &service); err != nil {
-			t.Fatal(err)
+		resources := []k8s.Object{&dnsService, &statefulSet, &service}
+		for _, r := range resources {
+			if err := client.Resources().Create(ctx, r); err != nil {
+				t.Fatal(err)
+			}
 		}
 
 		if err := wait.For(
-			conditions.New(client.Resources()).ResourceMatch(&statefulSet, func(object k8s.Object) bool {
+			conditions.New(client.Resources()).ResourceScaled(&statefulSet, func(object k8s.Object) int32 {
 				statefulSet := object.(*appsv1.StatefulSet)
-				return statefulSet.Status.AvailableReplicas >= replicas
-			}),
+				return statefulSet.Status.ReadyReplicas
+			}, replicas),
 			wait.WithTimeout(time.Minute*1),
 		); err != nil {
 			t.Fatal(err)
@@ -165,14 +162,38 @@ func stopEtcd(name string) func(ctx context.Context, t *testing.T, c *envconf.Co
 		dnsService := corev1.Service{
 			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
 		}
+		resources := []k8s.Object{&dnsService, &statefulSet, &service}
+		for _, r := range resources {
+			if err := client.Resources().Delete(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+		}
 
-		if err := client.Resources().Delete(ctx, &service); err != nil {
+		return ctx
+	}
+}
+
+func scaleEtcd(name string, replicas int32) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client := c.Client()
+		etcd := appsv1.StatefulSet{}
+		if err := client.Resources().Get(ctx, "foo", "default", &etcd); err != nil {
 			t.Fatal(err)
 		}
-		if err := client.Resources().Delete(ctx, &statefulSet); err != nil {
+
+		etcd.Spec.Replicas = &replicas
+
+		if err := client.Resources().Update(ctx, &etcd); err != nil {
 			t.Fatal(err)
 		}
-		if err := client.Resources().Delete(ctx, &dnsService); err != nil {
+
+		if err := wait.For(
+			conditions.New(client.Resources()).ResourceScaled(&etcd, func(object k8s.Object) int32 {
+				statefulSet := object.(*appsv1.StatefulSet)
+				return statefulSet.Status.AvailableReplicas
+			}, 2),
+			wait.WithTimeout(time.Second*10),
+		); err != nil {
 			t.Fatal(err)
 		}
 
@@ -189,6 +210,15 @@ func startEtcdmon(etcdName string) func(ctx context.Context, t *testing.T, c *en
 		etcdmonLabels := map[string]string{"app": "etcdmon"}
 		selector := labels.SelectorFromSet(etcdLabels)
 
+		role := rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: "default"},
+			Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list"}}},
+		}
+		roleBinding := rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: "default"},
+			RoleRef:    rbacv1.RoleRef{Name: role.Name, APIGroup: rbacv1.SchemeGroupVersion.Group, Kind: "Role"},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "default", Namespace: "default"}},
+		}
 		deployment := appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: "default"},
 			Spec: appsv1.DeploymentSpec{
@@ -211,15 +241,18 @@ func startEtcdmon(etcdName string) func(ctx context.Context, t *testing.T, c *en
 			},
 		}
 
-		if err := client.Resources().Create(ctx, &deployment); err != nil {
-			t.Fatal(err)
+		resources := []k8s.Object{&role, &roleBinding, &deployment}
+		for _, r := range resources {
+			if err := client.Resources().Create(ctx, r); err != nil {
+				t.Fatal(err)
+			}
 		}
 
 		if err := wait.For(
-			conditions.New(client.Resources()).ResourceMatch(&deployment, func(object k8s.Object) bool {
+			conditions.New(client.Resources()).ResourceScaled(&deployment, func(object k8s.Object) int32 {
 				deployment := object.(*appsv1.Deployment)
-				return deployment.Status.AvailableReplicas >= replicas
-			}),
+				return deployment.Status.AvailableReplicas
+			}, 1),
 			wait.WithTimeout(time.Second*10),
 		); err != nil {
 			t.Fatal(err)
@@ -233,12 +266,47 @@ func stopEtcdmon(name string) func(ctx context.Context, t *testing.T, c *envconf
 	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client := c.Client()
 
+		role := rbacv1.Role{
+			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: "default"},
+		}
+		roleBinding := rbacv1.RoleBinding{
+			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: "default"},
+		}
 		deployment := appsv1.Deployment{
 			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: "default"},
 		}
 
-		if err := client.Resources().Delete(ctx, &deployment); err != nil {
+		resources := []k8s.Object{&role, &roleBinding, &deployment}
+		for _, r := range resources {
+			if err := client.Resources().Delete(ctx, r); err != nil {
+				t.Fatal(err)
+			}
+		}
+
+		return ctx
+	}
+}
+
+func waitForEtcd(count int) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		etcd, err := NewEtcd([]string{"http://localhost:5001"}, CertPaths{}, ctx)
+		if err != nil {
 			t.Fatal(err)
+		}
+
+		for ctx.Err() == nil {
+			etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+			members, err := etcd.MemberList(etcdCtx)
+			cancel()
+
+			if err != nil {
+				t.Fatal(err)
+				break
+			} else if len(members.Members) == count {
+				break
+			} else {
+				time.Sleep(500 * time.Millisecond)
+			}
 		}
 
 		return ctx
@@ -247,24 +315,12 @@ func stopEtcdmon(name string) func(ctx context.Context, t *testing.T, c *envconf
 
 func TestKubernetes(t *testing.T) {
 	setup := features.New("setup").
-		WithSetup("start etcd", startEtcd("foo")).
+		WithSetup("start etcd", startEtcd("foo", int32(3))).
 		WithTeardown("stop etcd", stopEtcd("foo")).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
 		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
-		Assess("etcd up", func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-			etcd, err := NewEtcd([]string{"http://localhost:5001"}, CertPaths{}, ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			members, err := etcd.MemberList(ctx)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if len(members.Members) != 3 {
-				t.Errorf("Expected 3 etcd members, found %d", len(members.Members))
-			}
-			return ctx
-		}).Feature()
+		WithSetup("remove etcd member", scaleEtcd("foo", 2)).
+		Assess("etcd up", waitForEtcd(2)).Feature()
 
 	testenv.Test(t, setup)
 }
