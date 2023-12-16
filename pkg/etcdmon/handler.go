@@ -33,26 +33,26 @@ func (c *Controller) reconcileEtcd(baseCtx context.Context) error {
 	orphanMembers := make(map[string]uint64)
 	for _, member := range members.Members {
 		if _, ok := pods[member.Name]; ok {
-			klog.Infof("Found node for etcd member %s\n", member.Name)
+			klog.Infof("Found pod for etcd member %s\n", member.Name)
 			delete(pods, member.Name)
 		} else {
 			orphanMembers[member.Name] = member.ID
 		}
 	}
 
-	for nodeName := range pods {
+	for podName := range pods {
 		// TODO: Check if we would exceed quorum by adding too many nodes
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		klog.V(2).Infof("Adding etcd member for new node %s\n", nodeName)
-		member, err := c.etcd.MemberAdd(ctx, []string{nodeName})
+		klog.V(2).Infof("Adding etcd member for new pod %s\n", podName)
+		member, err := c.etcd.MemberAdd(ctx, []string{podName})
 		if err != nil {
 			return err
 		}
-		klog.Infof("Added etcd member for new node %s (%x)\n", nodeName, member.Member.ID)
+		klog.Infof("Added etcd member for new node %s (%x)\n", podName, member.Member.ID)
 	}
 	if len(orphanMembers) > len(members.Members)/2 {
-		klog.Errorf("%d out of %d members are missing nodes, which is more than quorum\n", len(orphanMembers), len(members.Members))
+		klog.Errorf("%d out of %d members are missing pods, which is more than quorum\n", len(orphanMembers), len(members.Members))
 		return nil
 	}
 	for k, id := range orphanMembers {
@@ -79,6 +79,6 @@ func (c *Controller) EtcdEndpoints() ([]string, error) {
 		endpoint := fmt.Sprintf("https://%s:2379", pod.Name)
 		endpoints = append(endpoints, endpoint)
 	}
-	klog.Infof("Found etcd endpoints %s from node names\n", strings.Join(endpoints, ","))
+	klog.Infof("Found etcd endpoints %s from pod names\n", strings.Join(endpoints, ","))
 	return endpoints, nil
 }
