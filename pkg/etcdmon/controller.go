@@ -5,6 +5,7 @@ package etcdmon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -20,15 +21,25 @@ import (
 	corev1informers "k8s.io/client-go/informers/core/v1"
 )
 
+type State struct {
+	pods map[string]struct{}
+	time time.Time
+}
+
 type Controller struct {
 	queue   workqueue.RateLimitingInterface
 	pods    corev1informers.PodInformer
 	factory informers.SharedInformerFactory
 
 	etcd EtcdClient
+
+	timeout time.Duration
+	state   State
 }
 
-func NewController(client kubernetes.Interface, etcd EtcdClient, namespace string, selector string) *Controller {
+var ErrNotStabilized = errors.New("etcd state not yet stabilized")
+
+func NewController(client kubernetes.Interface, etcd EtcdClient, namespace string, selector string, timeout time.Duration) *Controller {
 	queue := workqueue.NewRateLimitingQueue(workqueue.DefaultControllerRateLimiter())
 
 	factory := informers.NewSharedInformerFactoryWithOptions(
@@ -55,7 +66,19 @@ func NewController(client kubernetes.Interface, etcd EtcdClient, namespace strin
 		},
 	})
 
-	return &Controller{pods: pods, factory: factory, queue: queue, etcd: etcd}
+	return &Controller{
+		pods:    pods,
+		factory: factory,
+		queue:   queue,
+
+		etcd: etcd,
+
+		timeout: timeout,
+		state: State{
+			pods: make(map[string]struct{}),
+			time: time.Now(),
+		},
+	}
 }
 
 func (c *Controller) Run(ctx context.Context, etcdCerts CertPaths, workers int) error {
@@ -112,6 +135,9 @@ func (c *Controller) processItem(ctx context.Context, key string) error {
 func (c *Controller) handleErr(err error, key interface{}) {
 	if err == nil {
 		c.queue.Forget(key)
+		return
+	} else if errors.Is(err, ErrNotStabilized) {
+		c.queue.AddAfter(key, c.timeout)
 		return
 	}
 

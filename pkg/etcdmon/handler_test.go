@@ -2,10 +2,12 @@ package etcdmon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"strings"
 	"testing"
+	"time"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
 	clientv3 "go.etcd.io/etcd/client/v3"
@@ -85,7 +87,7 @@ func newFixture(t *testing.T, objects []runtime.Object, members []runtime.Object
 }
 
 func (f *fixture) newController(ctx context.Context, objects []runtime.Object, members []runtime.Object) *Controller {
-	c := NewController(f.kubeclient, f.etcdclient, "default", "app=etcd,component=control-plane")
+	c := NewController(f.kubeclient, f.etcdclient, "default", "app=etcd,component=control-plane", 10*time.Millisecond)
 
 	for _, o := range objects {
 		switch o := o.(type) {
@@ -141,8 +143,14 @@ func TestSync(t *testing.T) {
 			_, ctx := ktesting.NewTestContext(t)
 
 			c := f.newController(ctx, pods[0:testCase.nPods], pods[0:testCase.nMembers])
-			err := c.reconcileEtcd(ctx)
-			if err != nil {
+
+			if err := c.reconcileEtcd(ctx); err != nil {
+				if !errors.Is(err, ErrNotStabilized) {
+					t.Fatal(err)
+				}
+			}
+			time.Sleep(c.timeout * 2)
+			if err := c.reconcileEtcd(ctx); err != nil {
 				t.Fatal(err)
 			}
 
@@ -150,9 +158,45 @@ func TestSync(t *testing.T) {
 				t.Errorf("Got %d etcd additions, expected %d", len(f.etcdclient.additions), testCase.nAdditions)
 			}
 			if len(f.etcdclient.removals) != testCase.nRemovals {
-				t.Errorf("Got %d etcd additions, expected %d", len(f.etcdclient.additions), testCase.nRemovals)
+				t.Errorf("Got %d etcd removals, expected %d", len(f.etcdclient.removals), testCase.nRemovals)
 			}
 		})
+	}
+}
+
+func TestDelay(t *testing.T) {
+	pods := make([]runtime.Object, 0, 3)
+	for i := 0; i < 3; i++ {
+		pods = append(pods, &corev1.Pod{
+			ObjectMeta: v1.ObjectMeta{
+				Name: fmt.Sprintf("foo-%d", i), Namespace: "default",
+				Labels: map[string]string{"app": "etcd", "component": "control-plane"},
+			},
+			Status: corev1.PodStatus{PodIP: fmt.Sprintf("192.0.2.%d", i+1)},
+		})
+	}
+
+	f := newFixture(t, pods[0:2], pods)
+	_, ctx := ktesting.NewTestContext(t)
+	c := f.newController(ctx, pods[0:2], pods)
+
+	for i := 0; i < 2; i++ {
+		c.reconcileEtcd(ctx)
+		if len(f.etcdclient.additions) != 0 {
+			t.Errorf("Got %d etcd additions, expected %d", len(f.etcdclient.additions), 0)
+		}
+		if len(f.etcdclient.removals) != 0 {
+			t.Errorf("Got %d etcd removals, expected %d", len(f.etcdclient.removals), 0)
+		}
+	}
+
+	time.Sleep(c.timeout * 2)
+	c.reconcileEtcd(ctx)
+	if len(f.etcdclient.additions) != 0 {
+		t.Errorf("Got %d etcd additions, expected %d", len(f.etcdclient.additions), 0)
+	}
+	if len(f.etcdclient.removals) != 1 {
+		t.Errorf("Got %d etcd removals, expected %d", len(f.etcdclient.removals), 1)
 	}
 }
 
