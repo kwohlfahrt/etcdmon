@@ -52,7 +52,7 @@ func (c *Controller) reconcileEtcd(baseCtx context.Context) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		klog.V(2).Infof("Adding etcd member for new pod %s\n", podName)
-		member, err := c.etcd.MemberAdd(ctx, []string{c.podUrl(pod)})
+		member, err := c.etcd.MemberAdd(ctx, []string{c.podUrl(pod, true)})
 		if err != nil {
 			return err
 		}
@@ -86,7 +86,7 @@ func (c *Controller) EtcdEndpoints() ([]string, error) {
 	for _, pod := range pods {
 		for _, condition := range pod.Status.Conditions {
 			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
-				endpoints = append(endpoints, c.podUrl(pod))
+				endpoints = append(endpoints, c.podUrl(pod, false))
 				break
 			}
 		}
@@ -95,10 +95,14 @@ func (c *Controller) EtcdEndpoints() ([]string, error) {
 	return endpoints, nil
 }
 
-func (c *Controller) podUrl(pod *corev1.Pod) string {
+func (c *Controller) podUrl(pod *corev1.Pod, peer bool) string {
 	scheme := "https"
 	if !c.etcd.IsHttps() {
 		scheme = "http"
 	}
-	return fmt.Sprintf("%s://%s:2379", scheme, pod.Status.PodIP)
+	port := 2379
+	if peer {
+		port = 2380
+	}
+	return fmt.Sprintf("%s://%s:%d", scheme, pod.Status.PodIP, port)
 }

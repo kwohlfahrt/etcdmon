@@ -97,7 +97,7 @@ func (f *fixture) newController(ctx context.Context, objects []runtime.Object, m
 	for _, o := range members {
 		switch o := o.(type) {
 		case *corev1.Pod:
-			url := c.podUrl(o)
+			url := c.podUrl(o, true)
 			member := etcdserverpb.Member{Name: o.Name, ID: genId(url), PeerURLs: []string{url}}
 			f.etcdclient.members = append(f.etcdclient.members, &member)
 		}
