@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/klog/v2"
 )
@@ -74,11 +75,14 @@ func (c *Controller) EtcdEndpoints() ([]string, error) {
 		return nil, err
 	}
 
-	endpoints := []string{}
+	endpoints := make([]string, 0, len(pods))
 	for _, pod := range pods {
-		endpoint := fmt.Sprintf("https://%s:2379", pod.Name)
-		endpoints = append(endpoints, endpoint)
+		endpoints = append(endpoints, podUrl(pod))
 	}
 	klog.Infof("Found etcd endpoints %s from pod names\n", strings.Join(endpoints, ","))
 	return endpoints, nil
+}
+
+func podUrl(pod *corev1.Pod) string {
+	return fmt.Sprintf("https://%s:2379", pod.Status.PodIP)
 }
