@@ -18,6 +18,7 @@ type EtcdClient interface {
 	MemberAdd(ctx context.Context, urls []string) (*clientv3.MemberAddResponse, error)
 	MemberRemove(ctx context.Context, id uint64) (*clientv3.MemberRemoveResponse, error)
 	SetEndpoints(endpoints ...string)
+	IsHttps() bool
 	Close() error
 }
 
@@ -54,9 +55,13 @@ func NewEtcd(certs CertPaths) (EtcdClient, error) {
 		clientCerts = []tls.Certificate{clientCert}
 	}
 
-	etcdTls := tls.Config{RootCAs: ca, Certificates: clientCerts}
+	var tlsConfig *tls.Config
+	if ca != nil || clientCerts != nil {
+		tlsConfig = &tls.Config{RootCAs: ca, Certificates: clientCerts}
+	}
+
 	etcd := &client{
-		config: clientv3.Config{DialTimeout: 2 * time.Second, TLS: &etcdTls},
+		config: clientv3.Config{DialTimeout: 2 * time.Second, TLS: tlsConfig},
 	}
 	return etcd, nil
 }
@@ -70,6 +75,10 @@ func (c *client) Start(ctx context.Context, endpoints ...string) error {
 	}
 	c.client = x
 	return nil
+}
+
+func (c *client) IsHttps() bool {
+	return c.config.TLS != nil
 }
 
 func (c *client) Close() error {

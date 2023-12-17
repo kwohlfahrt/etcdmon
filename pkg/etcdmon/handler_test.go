@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"strings"
 	"testing"
 
 	"go.etcd.io/etcd/api/v3/etcdserverpb"
@@ -56,7 +57,11 @@ func (f *fakeEtcd) MemberRemove(ctx context.Context, id uint64) (*clientv3.Membe
 	return &clientv3.MemberRemoveResponse{Members: f.members}, nil
 }
 
-func (*fakeEtcd) SetEndpoints(endpoints ...string) {
+func (*fakeEtcd) IsHttps() bool {
+	return false
+}
+
+func (f *fakeEtcd) SetEndpoints(endpoints ...string) {
 }
 
 func (*fakeEtcd) Start(ctx context.Context, endpoints ...string) error {
@@ -76,15 +81,6 @@ func newFixture(t *testing.T, objects []runtime.Object, members []runtime.Object
 		etcdclient: &fakeEtcd{additions: []uint64{}, removals: []uint64{}, members: []*etcdserverpb.Member{}},
 	}
 
-	for _, o := range members {
-		switch o := o.(type) {
-		case *corev1.Pod:
-			url := podUrl(o)
-			member := etcdserverpb.Member{Name: o.Name, ID: genId(url), PeerURLs: []string{url}}
-			f.etcdclient.members = append(f.etcdclient.members, &member)
-		}
-	}
-
 	return f
 }
 
@@ -95,6 +91,15 @@ func (f *fixture) newController(ctx context.Context, objects []runtime.Object, m
 		switch o := o.(type) {
 		case *corev1.Pod:
 			c.pods.Informer().GetIndexer().Add(o)
+		}
+	}
+
+	for _, o := range members {
+		switch o := o.(type) {
+		case *corev1.Pod:
+			url := c.podUrl(o)
+			member := etcdserverpb.Member{Name: o.Name, ID: genId(url), PeerURLs: []string{url}}
+			f.etcdclient.members = append(f.etcdclient.members, &member)
 		}
 	}
 
@@ -148,5 +153,45 @@ func TestSync(t *testing.T) {
 				t.Errorf("Got %d etcd additions, expected %d", len(f.etcdclient.additions), testCase.nRemovals)
 			}
 		})
+	}
+}
+
+func TestEndpoints(t *testing.T) {
+	pods := make([]runtime.Object, 0, 4)
+	for i := 0; i < 4; i++ {
+		status := corev1.ConditionTrue
+		if i == 3 {
+			status = corev1.ConditionFalse
+		}
+		pods = append(pods, &corev1.Pod{
+			ObjectMeta: v1.ObjectMeta{
+				Name: fmt.Sprintf("foo-%d", i), Namespace: "default",
+				Labels: map[string]string{"app": "etcd", "component": "control-plane"},
+			},
+			Status: corev1.PodStatus{
+				PodIP:      fmt.Sprintf("192.0.2.%d", i+1),
+				Conditions: []corev1.PodCondition{{Type: corev1.PodReady, Status: status}},
+			},
+		})
+	}
+
+	f := newFixture(t, pods, pods)
+	_, ctx := ktesting.NewTestContext(t)
+
+	c := f.newController(ctx, pods, pods)
+	endpoints, err := c.EtcdEndpoints()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if len(endpoints) != 3 {
+		t.Errorf("Got %d endpoints, expected %d", len(endpoints), 3)
+	}
+
+	for _, endpoint := range endpoints {
+		parts := strings.SplitN(endpoint, ":", 2)
+		if parts[0] != "http" {
+			t.Errorf("Expected HTTP endpoint, got %s", endpoint)
+		}
 	}
 }

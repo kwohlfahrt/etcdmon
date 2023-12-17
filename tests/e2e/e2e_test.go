@@ -203,7 +203,7 @@ func scaleEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 		if err := wait.For(
 			conditions.New(client.Resources()).ResourceScaled(&etcd, func(object k8s.Object) int32 {
 				statefulSet := object.(*appsv1.StatefulSet)
-				return statefulSet.Status.AvailableReplicas
+				return statefulSet.Status.ReadyReplicas
 			}, 2),
 			wait.WithTimeout(time.Second*10),
 		); err != nil {
@@ -225,7 +225,9 @@ func startEtcdmon(etcdName string) func(ctx context.Context, t *testing.T, c *en
 
 		role := rbacv1.Role{
 			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: "default"},
-			Rules:      []rbacv1.PolicyRule{{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list"}}},
+			Rules: []rbacv1.PolicyRule{
+				{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list", "watch"}},
+			},
 		}
 		roleBinding := rbacv1.RoleBinding{
 			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: "default"},

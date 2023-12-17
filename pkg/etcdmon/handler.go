@@ -41,6 +41,12 @@ func (c *Controller) reconcileEtcd(baseCtx context.Context) error {
 		}
 	}
 
+	endpoints, err := c.EtcdEndpoints()
+	if err != nil {
+		return err
+	}
+	c.etcd.SetEndpoints(endpoints...)
+
 	for podName := range pods {
 		// TODO: Check if we would exceed quorum by adding too many nodes
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -76,13 +82,23 @@ func (c *Controller) EtcdEndpoints() ([]string, error) {
 	}
 
 	endpoints := make([]string, 0, len(pods))
+
 	for _, pod := range pods {
-		endpoints = append(endpoints, podUrl(pod))
+		for _, condition := range pod.Status.Conditions {
+			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
+				endpoints = append(endpoints, c.podUrl(pod))
+				break
+			}
+		}
 	}
 	klog.Infof("Found etcd endpoints %s from pod names\n", strings.Join(endpoints, ","))
 	return endpoints, nil
 }
 
-func podUrl(pod *corev1.Pod) string {
-	return fmt.Sprintf("https://%s:2379", pod.Status.PodIP)
+func (c *Controller) podUrl(pod *corev1.Pod) string {
+	scheme := "https"
+	if !c.etcd.IsHttps() {
+		scheme = "http"
+	}
+	return fmt.Sprintf("%s://%s:2379", scheme, pod.Status.PodIP)
 }
