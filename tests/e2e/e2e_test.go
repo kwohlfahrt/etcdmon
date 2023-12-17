@@ -33,15 +33,34 @@ func TestMain(m *testing.M) {
 	os.Exit(testenv.Run(m))
 }
 
+func makeEtcdArgs(name string, replicas int32, new bool) []string {
+	initialCluster := make([]string, 0, replicas)
+	for i := int32(0); i < replicas; i++ {
+		hostname := fmt.Sprintf("%s-%d", name, i)
+		initialCluster = append(initialCluster, fmt.Sprintf("%s=http://%s.%s:2380", hostname, hostname, name))
+	}
+
+	initialState := "new"
+	if !new {
+		initialState = "existing"
+	}
+
+	return []string{
+		"--name=$(HOSTNAME)",
+		fmt.Sprintf("--initial-cluster-state=%s", initialState),
+		fmt.Sprintf("--initial-cluster=%s", strings.Join(initialCluster, ",")),
+		"--listen-peer-urls=http://$(POD_IP):2380",
+		"--initial-advertise-peer-urls=http://$(POD_IP):2380",
+		"--listen-client-urls=http://0.0.0.0:2379",
+		"--advertise-client-urls=http://$(POD_IP):2379",
+		"--data-dir=/var/lib/etcd",
+	}
+}
+
 func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client := c.Client()
 
-		initialCluster := make([]string, 0, replicas)
-		for i := int32(0); i < replicas; i++ {
-			hostname := fmt.Sprintf("%s-%d", name, i)
-			initialCluster = append(initialCluster, fmt.Sprintf("%s=http://%s.%s:2380", hostname, hostname, name))
-		}
 		labels := map[string]string{"app": "etcd", "instance": name}
 
 		dnsService := corev1.Service{
@@ -72,6 +91,10 @@ func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 						}},
 					},
 				}},
+				PersistentVolumeClaimRetentionPolicy: &appsv1.StatefulSetPersistentVolumeClaimRetentionPolicy{
+					WhenScaled:  appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
+					WhenDeleted: appsv1.DeletePersistentVolumeClaimRetentionPolicyType,
+				},
 				Template: corev1.PodTemplateSpec{
 					ObjectMeta: metav1.ObjectMeta{Labels: labels},
 					Spec: corev1.PodSpec{
@@ -79,16 +102,7 @@ func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 							Name:    "etcd",
 							Image:   "registry.k8s.io/etcd:3.5.6-0",
 							Command: []string{"etcd"},
-							Args: []string{
-								"--name=$(HOSTNAME)",
-								"--initial-cluster-state=new",
-								fmt.Sprintf("--initial-cluster=%s", strings.Join(initialCluster, ",")),
-								"--listen-peer-urls=http://$(POD_IP):2380",
-								"--initial-advertise-peer-urls=http://$(POD_IP):2380",
-								"--listen-client-urls=http://0.0.0.0:2379",
-								"--advertise-client-urls=http://$(POD_IP):2379",
-								"--data-dir=/var/lib/etcd",
-							},
+							Args:    makeEtcdArgs(name, replicas, true),
 							Ports: []corev1.ContainerPort{
 								{Name: "client", ContainerPort: 2379},
 								{Name: "health", ContainerPort: 2379},
@@ -182,6 +196,10 @@ func stopEtcd(name string) func(ctx context.Context, t *testing.T, c *envconf.Co
 			}
 		}
 
+		for _, r := range resources {
+			wait.For(conditions.New(client.Resources()).ResourceDeleted(r), wait.WithTimeout(time.Minute*1))
+		}
+
 		return ctx
 	}
 }
@@ -195,7 +213,7 @@ func scaleEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 		}
 
 		etcd.Spec.Replicas = &replicas
-
+		etcd.Spec.Template.Spec.Containers[0].Args = makeEtcdArgs(name, replicas, false)
 		if err := client.Resources().Update(ctx, &etcd); err != nil {
 			t.Fatal(err)
 		}
@@ -203,9 +221,9 @@ func scaleEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 		if err := wait.For(
 			conditions.New(client.Resources()).ResourceScaled(&etcd, func(object k8s.Object) int32 {
 				statefulSet := object.(*appsv1.StatefulSet)
-				return statefulSet.Status.ReadyReplicas
+				return statefulSet.Status.CurrentReplicas
 			}, 2),
-			wait.WithTimeout(time.Second*10),
+			wait.WithTimeout(time.Minute*1),
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -298,6 +316,10 @@ func stopEtcdmon(name string) func(ctx context.Context, t *testing.T, c *envconf
 			}
 		}
 
+		for _, r := range resources {
+			wait.For(conditions.New(client.Resources()).ResourceDeleted(r), wait.WithTimeout(time.Minute*1))
+		}
+
 		return ctx
 	}
 }
@@ -333,13 +355,37 @@ func waitForEtcd(count int) func(ctx context.Context, t *testing.T, c *envconf.C
 }
 
 func TestKubernetes(t *testing.T) {
-	setup := features.New("setup").
+	remove := features.New("remove etcd member").
 		WithSetup("start etcd", startEtcd("foo", int32(3))).
 		WithTeardown("stop etcd", stopEtcd("foo")).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
 		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
 		WithSetup("remove etcd member", scaleEtcd("foo", 2)).
-		Assess("etcd up", waitForEtcd(2)).Feature()
+		Assess("etcd has correct members", waitForEtcd(2)).Feature()
 
-	testenv.Test(t, setup)
+	add := features.New("add etcd member").
+		WithSetup("start etcd", startEtcd("foo", int32(2))).
+		WithTeardown("stop etcd", stopEtcd("foo")).
+		WithSetup("start etcdmon", startEtcdmon("foo")).
+		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
+		WithSetup("remove etcd member", scaleEtcd("foo", 3)).
+		Assess("etcd up", waitForEtcd(3)).Feature()
+
+	removeOnStartup := features.New("remove etcd member on startup").
+		WithSetup("start etcd", startEtcd("foo", int32(3))).
+		WithTeardown("stop etcd", stopEtcd("foo")).
+		WithSetup("remove etcd member", scaleEtcd("foo", 2)).
+		WithSetup("start etcdmon", startEtcdmon("foo")).
+		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
+		Assess("etcd has correct members", waitForEtcd(2)).Feature()
+
+	addOnStartup := features.New("add etcd member on startup").
+		WithSetup("start etcd", startEtcd("foo", int32(2))).
+		WithTeardown("stop etcd", stopEtcd("foo")).
+		WithSetup("remove etcd member", scaleEtcd("foo", 3)).
+		WithSetup("start etcdmon", startEtcdmon("foo")).
+		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
+		Assess("etcd up", waitForEtcd(3)).Feature()
+
+	testenv.Test(t, remove, add, removeOnStartup, addOnStartup)
 }

@@ -12,14 +12,14 @@ import (
 )
 
 func (c *Controller) reconcileEtcd(baseCtx context.Context) error {
-	pods := make(map[string]struct{})
+	pods := make(map[string]*corev1.Pod)
 	podList, err := c.pods.Lister().List(labels.Everything())
 	if err != nil {
 		return err
 	}
 
 	for _, pod := range podList {
-		pods[pod.Name] = struct{}{}
+		pods[pod.Name] = pod
 	}
 	klog.Infof("There are %d pods in the cluster\n", len(pods))
 
@@ -47,12 +47,12 @@ func (c *Controller) reconcileEtcd(baseCtx context.Context) error {
 	}
 	c.etcd.SetEndpoints(endpoints...)
 
-	for podName := range pods {
+	for podName, pod := range pods {
 		// TODO: Check if we would exceed quorum by adding too many nodes
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
 		klog.V(2).Infof("Adding etcd member for new pod %s\n", podName)
-		member, err := c.etcd.MemberAdd(ctx, []string{podName})
+		member, err := c.etcd.MemberAdd(ctx, []string{c.podUrl(pod)})
 		if err != nil {
 			return err
 		}
