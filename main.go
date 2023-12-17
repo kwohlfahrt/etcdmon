@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"time"
 
 	"github.com/kwohlfahrt/etcdmon/pkg/etcdmon"
 
@@ -16,6 +17,7 @@ var selector = flag.String("selector", "tier=control-plane,component=etcd", "The
 var caCert = flag.String("ca-cert", "", "Path to the etcd CA certificate")
 var clientCert = flag.String("client-cert", "", "Path to the etcd client certificate")
 var clientKey = flag.String("client-key", "", "Path to the etcd client key")
+var timeout = flag.Duration("timeout", time.Minute*1, "Amount of time to wait for pod count to stabilize before changing etcd members")
 
 func init() {
 	klog.InitFlags(nil)
@@ -44,6 +46,6 @@ func main() {
 	if err != nil {
 		panic(err.Error())
 	}
-	controller := etcdmon.NewController(clientset, etcd, *namespace, *selector)
+	controller := etcdmon.NewController(clientset, etcd, *namespace, *selector, *timeout)
 	controller.Run(context.Background(), certs, 1)
 }

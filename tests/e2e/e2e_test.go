@@ -267,6 +267,7 @@ func startEtcdmon(etcdName string) func(ctx context.Context, t *testing.T, c *en
 							Args: []string{
 								"--namespace=default",
 								fmt.Sprintf("--selector=%s", selector.String()),
+								"--timeout=5s",
 							},
 						}},
 					},
@@ -357,34 +358,34 @@ func waitForEtcd(count int) func(ctx context.Context, t *testing.T, c *envconf.C
 func TestKubernetes(t *testing.T) {
 	remove := features.New("remove etcd member").
 		WithSetup("start etcd", startEtcd("foo", int32(3))).
-		WithTeardown("stop etcd", stopEtcd("foo")).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
 		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
+		WithTeardown("stop etcd", stopEtcd("foo")).
 		WithSetup("remove etcd member", scaleEtcd("foo", 2)).
 		Assess("etcd has correct members", waitForEtcd(2)).Feature()
 
 	add := features.New("add etcd member").
 		WithSetup("start etcd", startEtcd("foo", int32(2))).
-		WithTeardown("stop etcd", stopEtcd("foo")).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
 		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
+		WithTeardown("stop etcd", stopEtcd("foo")).
 		WithSetup("remove etcd member", scaleEtcd("foo", 3)).
 		Assess("etcd up", waitForEtcd(3)).Feature()
 
 	removeOnStartup := features.New("remove etcd member on startup").
 		WithSetup("start etcd", startEtcd("foo", int32(3))).
-		WithTeardown("stop etcd", stopEtcd("foo")).
 		WithSetup("remove etcd member", scaleEtcd("foo", 2)).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
 		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
+		WithTeardown("stop etcd", stopEtcd("foo")).
 		Assess("etcd has correct members", waitForEtcd(2)).Feature()
 
 	addOnStartup := features.New("add etcd member on startup").
 		WithSetup("start etcd", startEtcd("foo", int32(2))).
-		WithTeardown("stop etcd", stopEtcd("foo")).
 		WithSetup("remove etcd member", scaleEtcd("foo", 3)).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
 		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
+		WithTeardown("stop etcd", stopEtcd("foo")).
 		Assess("etcd up", waitForEtcd(3)).Feature()
 
 	testenv.Test(t, remove, add, removeOnStartup, addOnStartup)
