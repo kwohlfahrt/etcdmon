@@ -46,7 +46,7 @@ jobs:
           restore-keys: |
             go-
       - name: test
-        run: go test
+        run: go test ./...
 
   publish:
     runs-on: ubuntu-latest
