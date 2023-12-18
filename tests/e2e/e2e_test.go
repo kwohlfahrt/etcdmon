@@ -27,8 +27,10 @@ import (
 
 var testenv env.Environment
 
+type contextKey string
+
 func TestMain(m *testing.M) {
-	cfg := envconf.NewWithKubeConfig("./kubeconfig.yaml")
+	cfg := envconf.NewWithKubeConfig("./kubeconfig.yaml").WithParallelTestEnabled()
 	testenv = env.NewWithConfig(cfg)
 	os.Exit(testenv.Run(m))
 }
@@ -57,14 +59,43 @@ func makeEtcdArgs(name string, replicas int32, start int32, new bool) []string {
 	}
 }
 
+func createNamespace(name string, nodePort int32) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client := c.Client()
+		ns := &corev1.Namespace{ObjectMeta: metav1.ObjectMeta{
+			Name: name, Labels: map[string]string{"app": "etcdmon-test"},
+		}}
+		if err := client.Resources().Create(ctx, ns); err != nil {
+			t.Fatal(err)
+		}
+
+		ctx = context.WithValue(ctx, contextKey("namespace"), ns)
+		return context.WithValue(ctx, contextKey("nodePort"), nodePort)
+	}
+}
+
+func deleteNamespace() func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client := c.Client()
+		ns := ctx.Value(contextKey("namespace")).(*corev1.Namespace)
+		if err := client.Resources().Delete(ctx, ns); err != nil {
+			t.Fatal(err)
+		}
+
+		return ctx
+	}
+}
+
 func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client := c.Client()
+		nodePort := ctx.Value(contextKey("nodePort")).(int32)
+		ns := ctx.Value(contextKey("namespace")).(*corev1.Namespace)
 
 		labels := map[string]string{"app": "etcd", "instance": name}
 
 		dnsService := corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name},
 			Spec: corev1.ServiceSpec{
 				Selector:                 labels,
 				ClusterIP:                "None",
@@ -76,7 +107,7 @@ func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 		}
 
 		statefulSet := appsv1.StatefulSet{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name},
 			Spec: appsv1.StatefulSetSpec{
 				Replicas:            &replicas,
 				Selector:            &metav1.LabelSelector{MatchLabels: labels},
@@ -145,12 +176,12 @@ func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 		}
 
 		service := corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-node", name), Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-node", name), Namespace: ns.Name},
 			Spec: corev1.ServiceSpec{
 				Selector: labels,
 				Type:     corev1.ServiceTypeNodePort,
 				Ports: []corev1.ServicePort{
-					{Name: "client", TargetPort: intstr.FromString("client"), Port: 2379, NodePort: 30790},
+					{Name: "client", TargetPort: intstr.FromString("client"), Port: 2379, NodePort: nodePort},
 				},
 			},
 		}
@@ -176,39 +207,13 @@ func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 	}
 }
 
-func stopEtcd(name string) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client := c.Client()
-
-		service := corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{Name: fmt.Sprintf("%s-node", name), Namespace: "default"},
-		}
-		statefulSet := appsv1.StatefulSet{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-		}
-		dnsService := corev1.Service{
-			ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"},
-		}
-		resources := []k8s.Object{&dnsService, &statefulSet, &service}
-		for _, r := range resources {
-			if err := client.Resources().Delete(ctx, r); err != nil {
-				t.Fatal(err)
-			}
-		}
-
-		for _, r := range resources {
-			wait.For(conditions.New(client.Resources()).ResourceDeleted(r), wait.WithTimeout(time.Minute*1))
-		}
-
-		return ctx
-	}
-}
-
 func scaleEtcd(name string, replicas int32, start int32) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client := c.Client()
+		ns := ctx.Value(contextKey("namespace")).(*corev1.Namespace)
+
 		etcd := appsv1.StatefulSet{}
-		if err := client.Resources().Get(ctx, "foo", "default", &etcd); err != nil {
+		if err := client.Resources().Get(ctx, "foo", ns.Name, &etcd); err != nil {
 			t.Fatal(err)
 		}
 
@@ -236,6 +241,7 @@ func scaleEtcd(name string, replicas int32, start int32) func(ctx context.Contex
 func startEtcdmon(etcdName string) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client := c.Client()
+		ns := ctx.Value(contextKey("namespace")).(*corev1.Namespace)
 
 		replicas := int32(1)
 		etcdLabels := map[string]string{"app": "etcd", "instance": etcdName}
@@ -243,18 +249,18 @@ func startEtcdmon(etcdName string) func(ctx context.Context, t *testing.T, c *en
 		selector := labels.SelectorFromSet(etcdLabels)
 
 		role := rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: ns.Name},
 			Rules: []rbacv1.PolicyRule{
 				{APIGroups: []string{""}, Resources: []string{"pods"}, Verbs: []string{"get", "list", "watch"}},
 			},
 		}
 		roleBinding := rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: ns.Name},
 			RoleRef:    rbacv1.RoleRef{Name: role.Name, APIGroup: rbacv1.SchemeGroupVersion.Group, Kind: "Role"},
-			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "default", Namespace: "default"}},
+			Subjects:   []rbacv1.Subject{{Kind: "ServiceAccount", Name: "default", Namespace: ns.Name}},
 		}
 		deployment := appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: "default"},
+			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: ns.Name},
 			Spec: appsv1.DeploymentSpec{
 				Replicas: &replicas,
 				Selector: &metav1.LabelSelector{MatchLabels: etcdmonLabels},
@@ -266,7 +272,7 @@ func startEtcdmon(etcdName string) func(ctx context.Context, t *testing.T, c *en
 							Image:           "etcdmon:latest",
 							ImagePullPolicy: corev1.PullNever,
 							Args: []string{
-								"--namespace=default",
+								fmt.Sprintf("--namespace=%s", ns.Name),
 								fmt.Sprintf("--selector=%s", selector.String()),
 								"--timeout=5s",
 								"-v=3",
@@ -298,40 +304,13 @@ func startEtcdmon(etcdName string) func(ctx context.Context, t *testing.T, c *en
 	}
 }
 
-func stopEtcdmon(name string) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		client := c.Client()
-
-		role := rbacv1.Role{
-			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: "default"},
-		}
-		roleBinding := rbacv1.RoleBinding{
-			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: "default"},
-		}
-		deployment := appsv1.Deployment{
-			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon", Namespace: "default"},
-		}
-
-		resources := []k8s.Object{&role, &roleBinding, &deployment}
-		for _, r := range resources {
-			if err := client.Resources().Delete(ctx, r); err != nil {
-				t.Fatal(err)
-			}
-		}
-
-		for _, r := range resources {
-			wait.For(conditions.New(client.Resources()).ResourceDeleted(r), wait.WithTimeout(time.Minute*1))
-		}
-
-		return ctx
-	}
-}
-
 func waitForEtcd(name string, count int) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client := c.Client()
+		nodePort := ctx.Value(contextKey("nodePort")).(int32)
+		ns := ctx.Value(contextKey("namespace")).(*corev1.Namespace)
 
-		etcd := appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}}
+		etcd := appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: ns.Name}}
 		if err := wait.For(
 			conditions.New(client.Resources()).ResourceScaled(&etcd, func(object k8s.Object) int32 {
 				statefulSet := object.(*appsv1.StatefulSet)
@@ -347,7 +326,7 @@ func waitForEtcd(name string, count int) func(ctx context.Context, t *testing.T,
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = etcdClient.Start(ctx, "http://localhost:5001")
+		err = etcdClient.Start(ctx, fmt.Sprintf("http://localhost:%d", nodePort))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -373,52 +352,50 @@ func waitForEtcd(name string, count int) func(ctx context.Context, t *testing.T,
 
 func TestKubernetes(t *testing.T) {
 	remove := features.New("remove etcd member").
+		WithSetup("create namespace", createNamespace("remove-etcd-test", 30790)).
+		WithTeardown("delete namespace", deleteNamespace()).
 		WithSetup("start etcd", startEtcd("foo", int32(3))).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
-		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
-		WithTeardown("stop etcd", stopEtcd("foo")).
 		WithSetup("remove etcd member", scaleEtcd("foo", 2, 0)).
 		Assess("etcd has correct members", waitForEtcd("foo", 2)).Feature()
 
 	add := features.New("add etcd member").
+		WithSetup("create namespace", createNamespace("add-etcd-test", 30791)).
+		WithTeardown("delete namespace", deleteNamespace()).
 		WithSetup("start etcd", startEtcd("foo", int32(2))).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
-		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
-		WithTeardown("stop etcd", stopEtcd("foo")).
 		WithSetup("remove etcd member", scaleEtcd("foo", 3, 0)).
 		Assess("etcd has correct members", waitForEtcd("foo", 3)).Feature()
 
 	replace := features.New("replace etcd member").
+		WithSetup("create namespace", createNamespace("replace-etcd-test", 30792)).
+		WithTeardown("delete namespace", deleteNamespace()).
 		WithSetup("start etcd", startEtcd("foo", int32(3))).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
 		WithSetup("replace etcd member", scaleEtcd("foo", 3, 1)).
-		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
-		WithTeardown("stop etcd", stopEtcd("foo")).
 		Assess("etcd has correct members", waitForEtcd("foo", 3)).Feature()
 
 	removeOnStartup := features.New("remove etcd member on startup").
+		WithSetup("create namespace", createNamespace("startup-remove-etcd-test", 30793)).
+		WithTeardown("delete namespace", deleteNamespace()).
 		WithSetup("start etcd", startEtcd("foo", int32(3))).
 		WithSetup("remove etcd member", scaleEtcd("foo", 2, 0)).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
-		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
-		WithTeardown("stop etcd", stopEtcd("foo")).
 		Assess("etcd has correct members", waitForEtcd("foo", 2)).Feature()
 
 	addOnStartup := features.New("add etcd member on startup").
+		WithSetup("create namespace", createNamespace("startup-add-etcd-test", 30794)).
 		WithSetup("start etcd", startEtcd("foo", int32(2))).
 		WithSetup("add etcd member", scaleEtcd("foo", 3, 0)).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
-		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
-		WithTeardown("stop etcd", stopEtcd("foo")).
 		Assess("etcd has correct members", waitForEtcd("foo", 3)).Feature()
 
 	replaceOnStartup := features.New("replace etcd member on startup").
+		WithSetup("create namespace", createNamespace("startup-replace-etcd-test", 30795)).
 		WithSetup("start etcd", startEtcd("foo", int32(3))).
 		WithSetup("replace etcd member", scaleEtcd("foo", 3, 1)).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
-		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
-		WithTeardown("stop etcd", stopEtcd("foo")).
 		Assess("etcd has correct members", waitForEtcd("foo", 3)).Feature()
 
-	testenv.Test(t, remove, add, replace, removeOnStartup, addOnStartup, replaceOnStartup)
+	testenv.TestInParallel(t, remove, add, replace, removeOnStartup, addOnStartup, replaceOnStartup)
 }
