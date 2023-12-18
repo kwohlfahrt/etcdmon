@@ -76,7 +76,7 @@ type fixture struct {
 	etcdclient *fakeEtcd
 }
 
-func newFixture(t *testing.T, objects []runtime.Object, members []runtime.Object) *fixture {
+func newFixture(t *testing.T, objects []runtime.Object) *fixture {
 	f := &fixture{
 		t:          t,
 		kubeclient: fake.NewSimpleClientset(objects...),
@@ -86,7 +86,12 @@ func newFixture(t *testing.T, objects []runtime.Object, members []runtime.Object
 	return f
 }
 
-func (f *fixture) newController(ctx context.Context, objects []runtime.Object, members []runtime.Object) *Controller {
+func (f *fixture) newController(
+	ctx context.Context,
+	objects []runtime.Object,
+	members []runtime.Object,
+	unstartedMembers []runtime.Object,
+) *Controller {
 	c := NewController(f.kubeclient, f.etcdclient, "default", "app=etcd,component=control-plane", 10*time.Millisecond)
 
 	for _, o := range objects {
@@ -101,6 +106,15 @@ func (f *fixture) newController(ctx context.Context, objects []runtime.Object, m
 		case *corev1.Pod:
 			url := c.podUrl(o, true)
 			member := etcdserverpb.Member{Name: o.Name, ID: genId(url), PeerURLs: []string{url}}
+			f.etcdclient.members = append(f.etcdclient.members, &member)
+		}
+	}
+
+	for _, o := range unstartedMembers {
+		switch o := o.(type) {
+		case *corev1.Pod:
+			url := c.podUrl(o, true)
+			member := etcdserverpb.Member{Name: "", ID: genId(url), PeerURLs: []string{url}}
 			f.etcdclient.members = append(f.etcdclient.members, &member)
 		}
 	}
@@ -124,25 +138,32 @@ func TestSync(t *testing.T) {
 	}
 
 	testCases := []struct {
-		nMembers   int
-		nPods      int
-		nAdditions int
-		nRemovals  int
+		nMembers          int
+		nUnstartedMembers int
+		nPods             int
+		nAdditions        int
+		nRemovals         int
 	}{
 		{nMembers: 3, nPods: 3, nAdditions: 0, nRemovals: 0},
 		{nMembers: 3, nPods: 2, nAdditions: 0, nRemovals: 1},
 		{nMembers: 2, nPods: 3, nAdditions: 1, nRemovals: 0},
+		{nMembers: 2, nUnstartedMembers: 1, nPods: 3, nAdditions: 0, nRemovals: 0},
 		// Don't go below quorum
 		{nMembers: 3, nPods: 1, nAdditions: 0, nRemovals: 0},
 		// TODO: Add pods in learner mode, to make this safer
 		{nMembers: 1, nPods: 3, nAdditions: 2, nRemovals: 0},
 	}
 	for _, testCase := range testCases {
-		t.Run(fmt.Sprintf("%d pods, %d members", testCase.nPods, testCase.nMembers), func(t *testing.T) {
-			f := newFixture(t, pods[0:testCase.nPods], pods[0:testCase.nMembers])
+		t.Run(fmt.Sprintf("%d pods, %d+%d members", testCase.nPods, testCase.nMembers, testCase.nUnstartedMembers), func(t *testing.T) {
+			f := newFixture(t, pods[0:testCase.nPods])
 			_, ctx := ktesting.NewTestContext(t)
 
-			c := f.newController(ctx, pods[0:testCase.nPods], pods[0:testCase.nMembers])
+			c := f.newController(
+				ctx,
+				pods[0:testCase.nPods],
+				pods[0:testCase.nMembers],
+				pods[testCase.nMembers:testCase.nMembers+testCase.nUnstartedMembers],
+			)
 
 			if err := c.reconcileEtcd(ctx); err != nil {
 				if !errors.Is(err, ErrNotStabilized) {
@@ -176,9 +197,9 @@ func TestDelay(t *testing.T) {
 		})
 	}
 
-	f := newFixture(t, pods[0:2], pods)
+	f := newFixture(t, pods[0:2])
 	_, ctx := ktesting.NewTestContext(t)
-	c := f.newController(ctx, pods[0:2], pods)
+	c := f.newController(ctx, pods[0:2], pods, []runtime.Object{})
 
 	for i := 0; i < 2; i++ {
 		c.reconcileEtcd(ctx)
@@ -219,10 +240,10 @@ func TestEndpoints(t *testing.T) {
 		})
 	}
 
-	f := newFixture(t, pods, pods)
+	f := newFixture(t, pods)
 	_, ctx := ktesting.NewTestContext(t)
 
-	c := f.newController(ctx, pods, pods)
+	c := f.newController(ctx, pods, pods, []runtime.Object{})
 	endpoints, err := c.EtcdEndpoints()
 	if err != nil {
 		t.Fatal(err)

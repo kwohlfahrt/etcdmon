@@ -33,9 +33,9 @@ func TestMain(m *testing.M) {
 	os.Exit(testenv.Run(m))
 }
 
-func makeEtcdArgs(name string, replicas int32, new bool) []string {
+func makeEtcdArgs(name string, replicas int32, start int32, new bool) []string {
 	initialCluster := make([]string, 0, replicas)
-	for i := int32(0); i < replicas; i++ {
+	for i := start; i < start+replicas; i++ {
 		hostname := fmt.Sprintf("%s-%d", name, i)
 		initialCluster = append(initialCluster, fmt.Sprintf("%s=http://%s.%s:2380", hostname, hostname, name))
 	}
@@ -102,7 +102,7 @@ func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 							Name:    "etcd",
 							Image:   "registry.k8s.io/etcd:3.5.6-0",
 							Command: []string{"etcd"},
-							Args:    makeEtcdArgs(name, replicas, true),
+							Args:    makeEtcdArgs(name, replicas, 0, true),
 							Ports: []corev1.ContainerPort{
 								{Name: "client", ContainerPort: 2379},
 								{Name: "health", ContainerPort: 2379},
@@ -214,7 +214,7 @@ func scaleEtcd(name string, replicas int32, start int32) func(ctx context.Contex
 
 		etcd.Spec.Replicas = &replicas
 		etcd.Spec.Ordinals = &appsv1.StatefulSetOrdinals{Start: start}
-		etcd.Spec.Template.Spec.Containers[0].Args = makeEtcdArgs(name, replicas, false)
+		etcd.Spec.Template.Spec.Containers[0].Args = makeEtcdArgs(name, replicas, start, false)
 		if err := client.Resources().Update(ctx, &etcd); err != nil {
 			t.Fatal(err)
 		}
@@ -222,9 +222,9 @@ func scaleEtcd(name string, replicas int32, start int32) func(ctx context.Contex
 		if err := wait.For(
 			conditions.New(client.Resources()).ResourceScaled(&etcd, func(object k8s.Object) int32 {
 				statefulSet := object.(*appsv1.StatefulSet)
-				return statefulSet.Status.CurrentReplicas
+				return statefulSet.Status.Replicas
 			}, replicas),
-			wait.WithTimeout(time.Minute*1),
+			wait.WithTimeout(time.Second*30),
 		); err != nil {
 			t.Fatal(err)
 		}
@@ -337,7 +337,7 @@ func waitForEtcd(name string, count int) func(ctx context.Context, t *testing.T,
 				statefulSet := object.(*appsv1.StatefulSet)
 				return min(statefulSet.Status.ReadyReplicas, statefulSet.Status.CurrentReplicas)
 			}, int32(count)),
-			wait.WithTimeout(time.Minute*1),
+			wait.WithTimeout(time.Minute*2),
 		); err != nil {
 			t.Error(err)
 		}

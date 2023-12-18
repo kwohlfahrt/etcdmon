@@ -82,8 +82,13 @@ func (c *Controller) reconcileEtcd(baseCtx context.Context) error {
 	klog.Infof("There are %d members in the etcd cluster\n", len(members.Members))
 
 	orphanMembers := make(map[string]uint64)
+	pendingMembers := make(map[string]struct{})
 	for _, member := range members.Members {
-		if _, ok := pods[member.Name]; ok {
+		if member.Name == "" {
+			urls := strings.Join(member.PeerURLs, ",")
+			klog.Infof("Found pending etcd member %s\n", urls)
+			pendingMembers[urls] = struct{}{}
+		} else if _, ok := pods[member.Name]; ok {
 			klog.Infof("Found pod for etcd member %s\n", member.Name)
 			delete(pods, member.Name)
 		} else {
@@ -91,17 +96,6 @@ func (c *Controller) reconcileEtcd(baseCtx context.Context) error {
 		}
 	}
 
-	for podName, pod := range pods {
-		// TODO: Check if we would exceed quorum by adding too many nodes
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		klog.V(2).Infof("Adding etcd member for new pod %s\n", podName)
-		member, err := c.etcd.MemberAdd(ctx, []string{c.podUrl(pod, true)})
-		if err != nil {
-			return err
-		}
-		klog.Infof("Added etcd member for new node %s (%x)\n", podName, member.Member.ID)
-	}
 	if len(orphanMembers) > len(members.Members)/2 {
 		klog.Errorf("%d out of %d members are missing pods, which is more than quorum\n", len(orphanMembers), len(members.Members))
 		return nil
@@ -114,6 +108,25 @@ func (c *Controller) reconcileEtcd(baseCtx context.Context) error {
 		if err != nil {
 			return err
 		}
+	}
+
+	for podName, pod := range pods {
+		url := c.podUrl(pod, true)
+		if _, ok := pendingMembers[url]; ok {
+			klog.Infof("Not adding new etcd member for pod %s, already pending\n", podName)
+			continue
+		}
+
+		// TODO: Check if we would exceed quorum by adding too many nodes
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		klog.V(3).Infof("Adding etcd member for new pod %s\n", podName)
+
+		member, err := c.etcd.MemberAdd(ctx, []string{url})
+		if err != nil {
+			return err
+		}
+		klog.Infof("Added etcd member for new pod %s (%x)\n", podName, member.Member.ID)
 	}
 
 	return nil
