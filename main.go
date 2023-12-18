@@ -2,29 +2,31 @@ package main
 
 import (
 	"context"
+	"flag"
 	"time"
 
 	"github.com/kwohlfahrt/etcdmon/pkg/etcdmon"
 
-	flag "github.com/spf13/pflag"
+	"github.com/spf13/pflag"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog/v2"
 )
 
-var namespace = flag.String("namespace", "kube-system", "The namespace to watch for pods in (default: kube-system)")
-var selector = flag.String("selector", "tier=control-plane,component=etcd", "The label selector for etcd pods")
-var caCert = flag.String("ca-cert", "", "Path to the etcd CA certificate")
-var clientCert = flag.String("client-cert", "", "Path to the etcd client certificate")
-var clientKey = flag.String("client-key", "", "Path to the etcd client key")
-var timeout = flag.Duration("timeout", time.Minute*1, "Amount of time to wait for pod count to stabilize before changing etcd members")
+var namespace = pflag.String("namespace", "kube-system", "The namespace to watch for pods in (default: kube-system)")
+var selector = pflag.String("selector", "tier=control-plane,component=etcd", "The label selector for etcd pods")
+var caCert = pflag.String("ca-cert", "", "Path to the etcd CA certificate")
+var clientCert = pflag.String("client-cert", "", "Path to the etcd client certificate")
+var clientKey = pflag.String("client-key", "", "Path to the etcd client key")
+var timeout = pflag.Duration("timeout", time.Minute*1, "Amount of time to wait for pod count to stabilize before changing etcd members")
 
 func init() {
 	klog.InitFlags(nil)
+	pflag.CommandLine.AddGoFlag(flag.CommandLine.Lookup("v"))
 }
 
 func main() {
-	flag.Parse()
+	pflag.Parse()
 
 	config, err := rest.InClusterConfig()
 	if err != nil {
