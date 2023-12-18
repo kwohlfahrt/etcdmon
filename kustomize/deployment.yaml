@@ -27,6 +27,10 @@ spec:
       containers:
       - name: etcdmon
         image: etcdmon:latest
+        args:
+          - --ca-cert=/etc/kubernetes/pki/etcd/ca.crt
+          - --client-cert=/etc/kubernetes/pki/etcd/peer.crt
+          - --client-key=/etc/kubernetes/pki/etcd/peer.key
         volumeMounts:
         - name: etcd-certs
           mountPath: /etc/kubernetes/pki/etcd
