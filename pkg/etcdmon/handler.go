@@ -41,14 +41,20 @@ func (c *Controller) checkState(pods map[string](*corev1.Pod)) error {
 }
 
 func (c *Controller) reconcileEtcd(baseCtx context.Context) error {
-	pods := make(map[string]*corev1.Pod)
 	podList, err := c.pods.Lister().List(labels.Everything())
 	if err != nil {
 		return err
 	}
 
+	pods := make(map[string]*corev1.Pod, len(podList))
 	for _, pod := range podList {
-		pods[pod.Name] = pod
+		// TODO: On k8s 1.29, check for `PodReadyToStartContainers` instead
+		if pod.Status.PodIP != "" {
+			klog.V(2).Infof("Adding pod %s", pod.Name)
+			pods[pod.Name] = pod
+		} else {
+			klog.V(2).Infof("Skipping pod %s because it has no IP", pod.Name)
+		}
 	}
 	klog.Infof("There are %d pods in the cluster\n", len(pods))
 
@@ -61,7 +67,11 @@ func (c *Controller) reconcileEtcd(baseCtx context.Context) error {
 		return nil
 	}
 
-	klog.Infof("Processing pod update.")
+	endpoints, err := c.EtcdEndpoints()
+	if err != nil {
+		return err
+	}
+	c.etcd.SetEndpoints(endpoints...)
 
 	ctx, cancel := context.WithTimeout(baseCtx, 5*time.Second)
 	members, err := c.etcd.MemberList(ctx)
@@ -80,12 +90,6 @@ func (c *Controller) reconcileEtcd(baseCtx context.Context) error {
 			orphanMembers[member.Name] = member.ID
 		}
 	}
-
-	endpoints, err := c.EtcdEndpoints()
-	if err != nil {
-		return err
-	}
-	c.etcd.SetEndpoints(endpoints...)
 
 	for podName, pod := range pods {
 		// TODO: Check if we would exceed quorum by adding too many nodes

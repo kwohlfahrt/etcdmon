@@ -204,7 +204,7 @@ func stopEtcd(name string) func(ctx context.Context, t *testing.T, c *envconf.Co
 	}
 }
 
-func scaleEtcd(name string, replicas int32) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+func scaleEtcd(name string, replicas int32, start int32) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client := c.Client()
 		etcd := appsv1.StatefulSet{}
@@ -213,6 +213,7 @@ func scaleEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 		}
 
 		etcd.Spec.Replicas = &replicas
+		etcd.Spec.Ordinals = &appsv1.StatefulSetOrdinals{Start: start}
 		etcd.Spec.Template.Spec.Containers[0].Args = makeEtcdArgs(name, replicas, false)
 		if err := client.Resources().Update(ctx, &etcd); err != nil {
 			t.Fatal(err)
@@ -222,7 +223,7 @@ func scaleEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 			conditions.New(client.Resources()).ResourceScaled(&etcd, func(object k8s.Object) int32 {
 				statefulSet := object.(*appsv1.StatefulSet)
 				return statefulSet.Status.CurrentReplicas
-			}, 2),
+			}, replicas),
 			wait.WithTimeout(time.Minute*1),
 		); err != nil {
 			t.Fatal(err)
@@ -268,6 +269,7 @@ func startEtcdmon(etcdName string) func(ctx context.Context, t *testing.T, c *en
 								"--namespace=default",
 								fmt.Sprintf("--selector=%s", selector.String()),
 								"--timeout=5s",
+								"-v=3",
 							},
 						}},
 					},
@@ -325,20 +327,34 @@ func stopEtcdmon(name string) func(ctx context.Context, t *testing.T, c *envconf
 	}
 }
 
-func waitForEtcd(count int) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+func waitForEtcd(name string, count int) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
-		etcd, err := etcdmon.NewEtcd(etcdmon.CertPaths{})
+		client := c.Client()
+
+		etcd := appsv1.StatefulSet{ObjectMeta: metav1.ObjectMeta{Name: name, Namespace: "default"}}
+		if err := wait.For(
+			conditions.New(client.Resources()).ResourceScaled(&etcd, func(object k8s.Object) int32 {
+				statefulSet := object.(*appsv1.StatefulSet)
+				return min(statefulSet.Status.ReadyReplicas, statefulSet.Status.CurrentReplicas)
+			}, int32(count)),
+			wait.WithTimeout(time.Minute*1),
+		); err != nil {
+			t.Error(err)
+		}
+
+		etcdClient, err := etcdmon.NewEtcd(etcdmon.CertPaths{})
+
 		if err != nil {
 			t.Fatal(err)
 		}
-		err = etcd.Start(ctx, "http://localhost:5001")
+		err = etcdClient.Start(ctx, "http://localhost:5001")
 		if err != nil {
 			t.Fatal(err)
 		}
 
 		for ctx.Err() == nil {
 			etcdCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
-			members, err := etcd.MemberList(etcdCtx)
+			members, err := etcdClient.MemberList(etcdCtx)
 			cancel()
 
 			if err != nil {
@@ -361,32 +377,48 @@ func TestKubernetes(t *testing.T) {
 		WithSetup("start etcdmon", startEtcdmon("foo")).
 		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
 		WithTeardown("stop etcd", stopEtcd("foo")).
-		WithSetup("remove etcd member", scaleEtcd("foo", 2)).
-		Assess("etcd has correct members", waitForEtcd(2)).Feature()
+		WithSetup("remove etcd member", scaleEtcd("foo", 2, 0)).
+		Assess("etcd has correct members", waitForEtcd("foo", 2)).Feature()
 
 	add := features.New("add etcd member").
 		WithSetup("start etcd", startEtcd("foo", int32(2))).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
 		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
 		WithTeardown("stop etcd", stopEtcd("foo")).
-		WithSetup("remove etcd member", scaleEtcd("foo", 3)).
-		Assess("etcd up", waitForEtcd(3)).Feature()
+		WithSetup("remove etcd member", scaleEtcd("foo", 3, 0)).
+		Assess("etcd has correct members", waitForEtcd("foo", 3)).Feature()
+
+	replace := features.New("replace etcd member").
+		WithSetup("start etcd", startEtcd("foo", int32(3))).
+		WithSetup("start etcdmon", startEtcdmon("foo")).
+		WithSetup("replace etcd member", scaleEtcd("foo", 3, 1)).
+		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
+		WithTeardown("stop etcd", stopEtcd("foo")).
+		Assess("etcd has correct members", waitForEtcd("foo", 3)).Feature()
 
 	removeOnStartup := features.New("remove etcd member on startup").
 		WithSetup("start etcd", startEtcd("foo", int32(3))).
-		WithSetup("remove etcd member", scaleEtcd("foo", 2)).
+		WithSetup("remove etcd member", scaleEtcd("foo", 2, 0)).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
 		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
 		WithTeardown("stop etcd", stopEtcd("foo")).
-		Assess("etcd has correct members", waitForEtcd(2)).Feature()
+		Assess("etcd has correct members", waitForEtcd("foo", 2)).Feature()
 
 	addOnStartup := features.New("add etcd member on startup").
 		WithSetup("start etcd", startEtcd("foo", int32(2))).
-		WithSetup("remove etcd member", scaleEtcd("foo", 3)).
+		WithSetup("add etcd member", scaleEtcd("foo", 3, 0)).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
 		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
 		WithTeardown("stop etcd", stopEtcd("foo")).
-		Assess("etcd up", waitForEtcd(3)).Feature()
+		Assess("etcd has correct members", waitForEtcd("foo", 3)).Feature()
 
-	testenv.Test(t, remove, add, removeOnStartup, addOnStartup)
+	replaceOnStartup := features.New("replace etcd member on startup").
+		WithSetup("start etcd", startEtcd("foo", int32(3))).
+		WithSetup("replace etcd member", scaleEtcd("foo", 3, 1)).
+		WithSetup("start etcdmon", startEtcdmon("foo")).
+		WithTeardown("stop etcdmon", stopEtcdmon("foo")).
+		WithTeardown("stop etcd", stopEtcd("foo")).
+		Assess("etcd has correct members", waitForEtcd("foo", 3)).Feature()
+
+	testenv.Test(t, remove, add, replace, removeOnStartup, addOnStartup, replaceOnStartup)
 }

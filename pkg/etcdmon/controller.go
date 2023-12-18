@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"time"
 
+	corev1 "k8s.io/api/core/v1"
 	"k8s.io/client-go/informers"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/tools/cache"
@@ -51,17 +52,25 @@ func NewController(client kubernetes.Interface, etcd EtcdClient, namespace strin
 	pods := factory.Core().V1().Pods()
 	pods.Informer().AddEventHandler(cache.ResourceEventHandlerFuncs{
 		AddFunc: func(obj interface{}) {
-			key, err := cache.MetaNamespaceKeyFunc(obj)
-			if err == nil {
-				klog.Infof("Adding pod %s", key)
-				queue.Add(key)
+			pod, ok := obj.(*corev1.Pod)
+			if ok {
+				klog.Infof("Adding pod %s", pod.Name)
+				queue.Add(struct{}{})
+			}
+		},
+		UpdateFunc: func(oldObj, newObj interface{}) {
+			oldPod := oldObj.(*corev1.Pod)
+			newPod := newObj.(*corev1.Pod)
+			if oldPod.ResourceVersion != newPod.ResourceVersion {
+				klog.Infof("Updating pod %s", newPod.Name)
+				queue.Add(struct{}{})
 			}
 		},
 		DeleteFunc: func(obj interface{}) {
-			key, err := cache.MetaNamespaceKeyFunc(obj)
-			if err == nil {
-				klog.Infof("Deleting pod %s", key)
-				queue.Add(key)
+			pod, ok := obj.(*corev1.Pod)
+			if ok {
+				klog.Infof("Deleting pod %s", pod.Name)
+				queue.Add(struct{}{})
 			}
 		},
 	})
@@ -112,7 +121,7 @@ func (c *Controller) Run(ctx context.Context, etcdCerts CertPaths, workers int) 
 				return
 			}
 			defer c.queue.Done(key)
-			err := c.processItem(ctx, key.(string))
+			err := c.reconcileEtcd(ctx)
 			c.handleErr(err, key)
 		}, 0, ctx.Done())
 	}
@@ -120,16 +129,6 @@ func (c *Controller) Run(ctx context.Context, etcdCerts CertPaths, workers int) 
 	<-ctx.Done()
 	klog.Info("stopping etcd monitor controller")
 	return nil
-}
-
-func (c *Controller) processItem(ctx context.Context, key string) error {
-	_, _, err := c.pods.Informer().GetIndexer().GetByKey(key)
-	if err != nil {
-		klog.Errorf("Failed to fetch object with key %s from store: %v", key, err)
-		return err
-	}
-
-	return c.reconcileEtcd(ctx)
 }
 
 func (c *Controller) handleErr(err error, key interface{}) {
@@ -141,13 +140,13 @@ func (c *Controller) handleErr(err error, key interface{}) {
 		return
 	}
 
-	if c.queue.NumRequeues(key) < 5 {
-		klog.Warningf("Error syncing node %v: %v", key, err)
+	if c.queue.NumRequeues(key) < 15 {
+		klog.Warningf("Error syncing etcd: %v", err)
 		c.queue.AddRateLimited(key)
 		return
 	}
 
 	c.queue.Forget(key)
 	runtime.HandleError(err)
-	klog.Errorf("Giving up reconciling node %v: %v", key, err)
+	klog.Errorf("Giving up syncing etcd: %v", err)
 }
