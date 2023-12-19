@@ -28,12 +28,9 @@ jobs:
           tags: etcdmon:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
-      - name: Prepare test environment
-        run: |
-          bash -x ./fixtures/certs.sh
       - name: Create kind cluster
         run: |
-          kind create cluster --config fixtures/kind.yaml --kubeconfig ./kubeconfig.yaml
+          kind create cluster --config tests/e2e/kind.yaml --kubeconfig ./tests/e2e/kubeconfig.yaml
       - name: Load operator images
         run: |
           kind load docker-image etcdmon:latest
@@ -49,7 +46,7 @@ jobs:
           restore-keys: |
             go-
       - name: test
-        run: go test
+        run: go test ./...
 
   publish:
     runs-on: ubuntu-latest
