@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/kwohlfahrt/etcdmon/pkg/etcdmon"
+	"go.etcd.io/etcd/api/v3/etcdserverpb"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -131,7 +132,7 @@ func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 					Spec: corev1.PodSpec{
 						Containers: []corev1.Container{{
 							Name:    "etcd",
-							Image:   "registry.k8s.io/etcd:3.5.6-0",
+							Image:   "registry.k8s.io/etcd:3.5.14-0",
 							Command: []string{"etcd"},
 							Args:    makeEtcdArgs(name, replicas, 0, true),
 							Ports: []corev1.ContainerPort{
@@ -141,9 +142,8 @@ func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 							ReadinessProbe: &corev1.Probe{
 								TimeoutSeconds: 15,
 								ProbeHandler: corev1.ProbeHandler{
-									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/health?serializable=true",
-										Port: intstr.FromString("health"),
+									Exec: &corev1.ExecAction{
+										Command: []string{"etcdctl", "member", "list", "--command-timeout=100ms"},
 									},
 								},
 							},
@@ -152,7 +152,7 @@ func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 								TimeoutSeconds:   15,
 								ProbeHandler: corev1.ProbeHandler{
 									HTTPGet: &corev1.HTTPGetAction{
-										Path: "/health?serializable=false",
+										Path: "/health?serializable=true",
 										Port: intstr.FromString("health"),
 									},
 								},
@@ -336,10 +336,17 @@ func waitForEtcd(name string, count int) func(ctx context.Context, t *testing.T,
 			members, err := etcdClient.MemberList(etcdCtx)
 			cancel()
 
+			fullMembers := make([]*etcdserverpb.Member, 0, len(members.Members))
+			for _, member := range members.Members {
+				if !member.IsLearner {
+					fullMembers = append(fullMembers, member)
+				}
+			}
+
 			if err != nil {
 				t.Fatal(err)
 				break
-			} else if len(members.Members) == count {
+			} else if len(fullMembers) == count {
 				break
 			} else {
 				time.Sleep(500 * time.Millisecond)

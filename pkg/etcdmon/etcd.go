@@ -86,7 +86,7 @@ func (c *client) Close() error {
 }
 
 func (c *client) MemberAdd(ctx context.Context, urls []string) (*clientv3.MemberAddResponse, error) {
-	return c.client.MemberAdd(ctx, urls)
+	return c.client.MemberAddAsLearner(ctx, urls)
 }
 
 func (c *client) MemberList(ctx context.Context) (*clientv3.MemberListResponse, error) {
