@@ -22,11 +22,6 @@ import (
 	corev1informers "k8s.io/client-go/informers/core/v1"
 )
 
-type State struct {
-	pods map[string]struct{}
-	time time.Time
-}
-
 type Controller struct {
 	queue   workqueue.RateLimitingInterface
 	pods    corev1informers.PodInformer
@@ -83,10 +78,7 @@ func NewController(client kubernetes.Interface, etcd EtcdClient, namespace strin
 		etcd: etcd,
 
 		timeout: timeout,
-		state: State{
-			pods: make(map[string]struct{}),
-			time: time.Now(),
-		},
+		state:   State{},
 	}
 }
 

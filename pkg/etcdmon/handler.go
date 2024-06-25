@@ -2,69 +2,21 @@ package etcdmon
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	etcdserver "go.etcd.io/etcd/server/v3/etcdserver"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/labels"
 	"k8s.io/klog/v2"
 )
 
-func (c *Controller) updateState(pods map[string](*corev1.Pod)) {
-	c.state.pods = make(map[string]struct{}, len(pods))
-	for k := range pods {
-		c.state.pods[k] = struct{}{}
-	}
-
-	c.state.time = time.Now()
-}
-
-func (c *Controller) checkState(pods map[string](*corev1.Pod)) error {
-	unseen := make(map[string]struct{}, len(c.state.pods))
-	for k := range c.state.pods {
-		unseen[k] = struct{}{}
-	}
-
-	for k := range pods {
-		if _, ok := unseen[k]; !ok {
-			c.updateState(pods)
-			return ErrNotStabilized
-		}
-		delete(unseen, k)
-	}
-	if len(unseen) > 0 {
-		c.updateState(pods)
-		return ErrNotStabilized
-	}
-	return nil
-}
-
 func (c *Controller) reconcileEtcd(baseCtx context.Context) error {
-	podList, err := c.pods.Lister().List(labels.Everything())
+	pods, err := c.pods.Lister().List(labels.Everything())
 	if err != nil {
 		return err
-	}
-
-	pods := make(map[string]*corev1.Pod, len(podList))
-	for _, pod := range podList {
-		// TODO: On k8s 1.29, check for `PodReadyToStartContainers` instead
-		if pod.Status.PodIP != "" {
-			klog.V(2).Infof("Adding pod %s", pod.Name)
-			pods[pod.Name] = pod
-		} else {
-			klog.V(2).Infof("Skipping pod %s because it has no IP", pod.Name)
-		}
-	}
-	klog.Infof("There are %d pods in the cluster\n", len(pods))
-
-	if err := c.checkState(pods); err != nil {
-		klog.Infof("Pods have changed since previous observation. Requeueing for timeout.")
-		return ErrNotStabilized
-	}
-	if time.Now().Before(c.state.time.Add(c.timeout)) {
-		klog.Infof("Timeout not yet reached, skipping update.")
-		return nil
 	}
 
 	endpoints, err := c.EtcdEndpoints()
@@ -79,57 +31,64 @@ func (c *Controller) reconcileEtcd(baseCtx context.Context) error {
 	if err != nil {
 		return err
 	}
-	klog.Infof("There are %d members in the etcd cluster\n", len(members.Members))
 
-	orphanMembers := make(map[string]uint64)
-	pendingMembers := make(map[string]struct{})
-	for _, member := range members.Members {
-		if member.Name == "" {
-			urls := strings.Join(member.PeerURLs, ",")
-			klog.Infof("Found pending etcd member %s\n", urls)
-			pendingMembers[urls] = struct{}{}
-		} else if _, ok := pods[member.Name]; ok {
-			klog.Infof("Found pod for etcd member %s\n", member.Name)
-			delete(pods, member.Name)
-		} else {
-			orphanMembers[member.Name] = member.ID
-		}
+	if err = c.state.reconcile(pods, members.Members); err != nil {
+		return err
 	}
 
-	if len(orphanMembers) > len(members.Members)/2 {
-		klog.Errorf("%d out of %d members are missing pods, which is more than quorum\n", len(orphanMembers), len(members.Members))
+	if err = c.state.checkQuorum(); err != nil {
+		klog.Error(err)
 		return nil
 	}
-	for k, id := range orphanMembers {
-		klog.Infof("Removing orphan etcd member %s (%x)\n", k, id)
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		_, err := c.etcd.MemberRemove(ctx, id)
-		cancel()
+
+	ctx, cancel = context.WithTimeout(baseCtx, 5*time.Second)
+	defer cancel()
+	var syncErrors []error
+	for podIP := range c.state.NewPods {
+		_, err := c.etcd.MemberAdd(ctx, []string{c.podUrl(podIP, true)})
 		if err != nil {
-			return err
+			syncErrors = append(syncErrors, err)
 		}
 	}
 
-	for podName, pod := range pods {
-		url := c.podUrl(pod, true)
-		if _, ok := pendingMembers[url]; ok {
-			klog.Infof("Not adding new etcd member for pod %s, already pending\n", podName)
-			continue
+	for memberId, state := range c.state.Etcd {
+		switch state.State {
+		case New:
+			klog.Infof("Waiting for member 0x%x to register", memberId)
+		case Learner:
+			klog.Infof("Trying to promote learner 0x%x", memberId)
+			_, err := c.etcd.MemberPromote(ctx, memberId)
+			if errors.Is(err, etcdserver.ErrLearnerNotReady) {
+				syncErrors = append(syncErrors, ErrNotStabilized)
+			} else if err != nil {
+				klog.Error(err)
+				syncErrors = append(syncErrors, err)
+			}
+		case Gone:
+			klog.Infof("Removing stale learner 0x%x", memberId)
+			_, err := c.etcd.MemberRemove(ctx, memberId)
+			if err != nil {
+				klog.Error(err)
+				syncErrors = append(syncErrors, err)
+			}
+		case Healthy:
+			klog.V(2).Infof("Skipping healthy member 0x%x", memberId)
+		case Dead:
+			if time.Now().Before(state.Transition.Add(c.timeout)) {
+				klog.Infof("Not removing dead member 0x%x, dead for less than timeout %fs", memberId, c.timeout.Seconds())
+				syncErrors = append(syncErrors, ErrNotStabilized)
+			} else {
+				klog.Infof("Removing dead member 0x%x", memberId)
+				_, err := c.etcd.MemberRemove(ctx, memberId)
+				if err != nil {
+					klog.Error(err)
+					syncErrors = append(syncErrors, err)
+				}
+			}
 		}
-
-		// TODO: Check if we would exceed quorum by adding too many nodes
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		klog.V(3).Infof("Adding etcd member for new pod %s\n", podName)
-
-		member, err := c.etcd.MemberAdd(ctx, []string{url})
-		if err != nil {
-			return err
-		}
-		klog.Infof("Added etcd member for new pod %s (%x)\n", podName, member.Member.ID)
 	}
 
-	return nil
+	return errors.Join(syncErrors...)
 }
 
 func (c *Controller) EtcdEndpoints() ([]string, error) {
@@ -143,7 +102,7 @@ func (c *Controller) EtcdEndpoints() ([]string, error) {
 	for _, pod := range pods {
 		for _, condition := range pod.Status.Conditions {
 			if condition.Type == corev1.PodReady && condition.Status == corev1.ConditionTrue {
-				endpoints = append(endpoints, c.podUrl(pod, false))
+				endpoints = append(endpoints, c.podUrl(pod.Status.PodIP, false))
 				break
 			}
 		}
@@ -152,7 +111,7 @@ func (c *Controller) EtcdEndpoints() ([]string, error) {
 	return endpoints, nil
 }
 
-func (c *Controller) podUrl(pod *corev1.Pod, peer bool) string {
+func (c *Controller) podUrl(podIP string, peer bool) string {
 	scheme := "https"
 	if !c.etcd.IsHttps() {
 		scheme = "http"
@@ -161,5 +120,5 @@ func (c *Controller) podUrl(pod *corev1.Pod, peer bool) string {
 	if peer {
 		port = 2380
 	}
-	return fmt.Sprintf("%s://%s:%d", scheme, pod.Status.PodIP, port)
+	return fmt.Sprintf("%s://%s:%d", scheme, podIP, port)
 }
