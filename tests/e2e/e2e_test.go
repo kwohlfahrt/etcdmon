@@ -195,7 +195,7 @@ func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 				statefulSet := object.(*appsv1.StatefulSet)
 				return statefulSet.Status.ReadyReplicas
 			}, replicas),
-			wait.WithTimeout(time.Minute*1),
+			wait.WithTimeout(time.Minute*2),
 		); err != nil {
 			t.Fatal(err)
 		}

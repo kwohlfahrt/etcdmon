@@ -45,8 +45,7 @@ jobs:
           key: go-${{ hashFiles('**/go.sum') }}
           restore-keys: |
             go-
-      - name: test
-        run: go test ./...
+      - run: go test -timeout 5m ./...
 
   publish:
     runs-on: ubuntu-latest
