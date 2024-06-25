@@ -135,10 +135,7 @@ func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 							Image:   "registry.k8s.io/etcd:3.5.14-0",
 							Command: []string{"etcd"},
 							Args:    makeEtcdArgs(name, replicas, 0, true),
-							Ports: []corev1.ContainerPort{
-								{Name: "client", ContainerPort: 2379},
-								{Name: "health", ContainerPort: 2379},
-							},
+							Ports:   []corev1.ContainerPort{{Name: "client", ContainerPort: 2379}},
 							ReadinessProbe: &corev1.Probe{
 								TimeoutSeconds: 15,
 								ProbeHandler: corev1.ProbeHandler{
@@ -153,7 +150,7 @@ func startEtcd(name string, replicas int32) func(ctx context.Context, t *testing
 								ProbeHandler: corev1.ProbeHandler{
 									HTTPGet: &corev1.HTTPGetAction{
 										Path: "/health?serializable=true",
-										Port: intstr.FromString("health"),
+										Port: intstr.FromString("client"),
 									},
 								},
 							},
