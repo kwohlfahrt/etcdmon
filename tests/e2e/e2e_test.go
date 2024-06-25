@@ -364,7 +364,7 @@ func TestKubernetes(t *testing.T) {
 		WithTeardown("delete namespace", deleteNamespace()).
 		WithSetup("start etcd", startEtcd("foo", int32(2))).
 		WithSetup("start etcdmon", startEtcdmon("foo")).
-		WithSetup("remove etcd member", scaleEtcd("foo", 3, 0)).
+		WithSetup("add etcd member", scaleEtcd("foo", 3, 0)).
 		Assess("etcd has correct members", waitForEtcd("foo", 3)).Feature()
 
 	replace := features.New("replace etcd member").
