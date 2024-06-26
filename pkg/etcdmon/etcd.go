@@ -17,6 +17,7 @@ type EtcdClient interface {
 	MemberList(ctx context.Context) (*clientv3.MemberListResponse, error)
 	MemberAdd(ctx context.Context, urls []string) (*clientv3.MemberAddResponse, error)
 	MemberRemove(ctx context.Context, id uint64) (*clientv3.MemberRemoveResponse, error)
+	MemberPromote(ctx context.Context, id uint64) (*clientv3.MemberPromoteResponse, error)
 	SetEndpoints(endpoints ...string)
 	IsHttps() bool
 	Close() error
@@ -85,8 +86,12 @@ func (c *client) Close() error {
 	return c.client.Close()
 }
 
+func (c *client) MemberPromote(ctx context.Context, id uint64) (*clientv3.MemberPromoteResponse, error) {
+	return c.client.MemberPromote(ctx, id)
+}
+
 func (c *client) MemberAdd(ctx context.Context, urls []string) (*clientv3.MemberAddResponse, error) {
-	return c.client.MemberAdd(ctx, urls)
+	return c.client.MemberAddAsLearner(ctx, urls)
 }
 
 func (c *client) MemberList(ctx context.Context) (*clientv3.MemberListResponse, error) {
