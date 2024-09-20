@@ -34,7 +34,11 @@ type client struct {
 	client *clientv3.Client
 }
 
-func NewEtcd(certs CertPaths) (EtcdClient, error) {
+func LoadCerts(certs CertPaths) (*tls.Config, error) {
+	if certs.CaCert == "" {
+		return nil, nil
+	}
+
 	var ca *x509.CertPool = nil
 	if certs.CaCert != "" {
 		ca = x509.NewCertPool()
@@ -56,15 +60,14 @@ func NewEtcd(certs CertPaths) (EtcdClient, error) {
 		clientCerts = []tls.Certificate{clientCert}
 	}
 
-	var tlsConfig *tls.Config
-	if ca != nil || clientCerts != nil {
-		tlsConfig = &tls.Config{RootCAs: ca, Certificates: clientCerts}
-	}
+	return &tls.Config{RootCAs: ca, Certificates: clientCerts}, nil
+}
 
+func NewEtcd(tlsConfig *tls.Config) EtcdClient {
 	etcd := &client{
 		config: clientv3.Config{DialTimeout: 2 * time.Second, TLS: tlsConfig},
 	}
-	return etcd, nil
+	return etcd
 }
 
 func (c *client) Start(ctx context.Context, endpoints ...string) error {
