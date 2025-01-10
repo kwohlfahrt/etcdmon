@@ -375,7 +375,7 @@ func scaleEtcd(name string, replicas int32, start int32) func(ctx context.Contex
 	}
 }
 
-func startEtcdmon(etcdName string, expiry time.Duration) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+func createEtcdmonCert(expiry time.Duration, update bool) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
 		client := c.Client()
 		ns := ctx.Value(contextKey("namespace")).(*corev1.Namespace)
@@ -398,10 +398,34 @@ func startEtcdmon(etcdName string, expiry time.Duration) func(ctx context.Contex
 			t.Fatal(err.Error())
 		}
 
-		certSecret := corev1.Secret{
+		certSecret := &corev1.Secret{
 			ObjectMeta: metav1.ObjectMeta{Name: "etcdmon-cert", Namespace: ns.Name},
 			StringData: map[string]string{"ca.pem": caPem, "cert.pem": certPem, "key.pem": keyPem},
 		}
+
+		if !update {
+			err = client.Resources().Create(ctx, certSecret)
+		} else {
+			err = client.Resources().Update(ctx, certSecret)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		if update {
+			// Wait for the update to propagate before continuing
+			time.Sleep(1 * time.Minute)
+		}
+
+		ctx = context.WithValue(ctx, contextKey("etcdmon-certs"), certSecret)
+		return ctx
+	}
+}
+
+func startEtcdmon(etcdName string) func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+	return func(ctx context.Context, t *testing.T, c *envconf.Config) context.Context {
+		client := c.Client()
+		ns := ctx.Value(contextKey("namespace")).(*corev1.Namespace)
+		certSecret := ctx.Value(contextKey("etcdmon-certs")).(*corev1.Secret)
 
 		replicas := int32(1)
 		etcdLabels := map[string]string{"app": "etcd", "instance": etcdName}
@@ -450,7 +474,7 @@ func startEtcdmon(etcdName string, expiry time.Duration) func(ctx context.Contex
 			},
 		}
 
-		resources := []k8s.Object{&role, &roleBinding, &deployment, &certSecret}
+		resources := []k8s.Object{&role, &roleBinding, &deployment}
 		for _, r := range resources {
 			if err := client.Resources().Create(ctx, r); err != nil {
 				t.Fatal(err)
@@ -540,61 +564,69 @@ func TestKubernetes(t *testing.T) {
 	remove := features.New("remove etcd member").
 		WithSetup("create namespace", createNamespace("remove-etcd-test", 30790)).
 		WithSetup("create ca", createCa()).
+		WithSetup("create etcdmon certs", createEtcdmonCert(1*time.Hour, false)).
 		WithTeardown("delete namespace", deleteNamespace()).
 		WithSetup("start etcd", startEtcd("foo", int32(3))).
-		WithSetup("start etcdmon", startEtcdmon("foo", 1*time.Hour)).
+		WithSetup("start etcdmon", startEtcdmon("foo")).
 		WithSetup("remove etcd member", scaleEtcd("foo", 2, 0)).
 		Assess("etcd has correct members", waitForEtcd("foo", 2)).Feature()
 
 	add := features.New("add etcd member").
 		WithSetup("create namespace", createNamespace("add-etcd-test", 30791)).
 		WithSetup("create ca", createCa()).
+		WithSetup("create etcdmon certs", createEtcdmonCert(1*time.Hour, false)).
 		WithTeardown("delete namespace", deleteNamespace()).
 		WithSetup("start etcd", startEtcd("foo", int32(2))).
-		WithSetup("start etcdmon", startEtcdmon("foo", 1*time.Hour)).
+		WithSetup("start etcdmon", startEtcdmon("foo")).
 		WithSetup("add etcd member", scaleEtcd("foo", 3, 0)).
 		Assess("etcd has correct members", waitForEtcd("foo", 3)).Feature()
 
 	replace := features.New("replace etcd member").
 		WithSetup("create namespace", createNamespace("replace-etcd-test", 30792)).
 		WithSetup("create ca", createCa()).
+		WithSetup("create etcdmon certs", createEtcdmonCert(1*time.Hour, false)).
 		WithTeardown("delete namespace", deleteNamespace()).
 		WithSetup("start etcd", startEtcd("foo", int32(3))).
-		WithSetup("start etcdmon", startEtcdmon("foo", 1*time.Hour)).
+		WithSetup("start etcdmon", startEtcdmon("foo")).
 		WithSetup("replace etcd member", scaleEtcd("foo", 3, 1)).
 		Assess("etcd has correct members", waitForEtcd("foo", 3)).Feature()
 
 	removeOnStartup := features.New("remove etcd member on startup").
 		WithSetup("create namespace", createNamespace("startup-remove-etcd-test", 30793)).
 		WithSetup("create ca", createCa()).
+		WithSetup("create etcdmon certs", createEtcdmonCert(1*time.Hour, false)).
 		WithTeardown("delete namespace", deleteNamespace()).
 		WithSetup("start etcd", startEtcd("foo", int32(3))).
 		WithSetup("remove etcd member", scaleEtcd("foo", 2, 0)).
-		WithSetup("start etcdmon", startEtcdmon("foo", 1*time.Hour)).
+		WithSetup("start etcdmon", startEtcdmon("foo")).
 		Assess("etcd has correct members", waitForEtcd("foo", 2)).Feature()
 
 	addOnStartup := features.New("add etcd member on startup").
 		WithSetup("create namespace", createNamespace("startup-add-etcd-test", 30794)).
 		WithSetup("create ca", createCa()).
+		WithSetup("create etcdmon certs", createEtcdmonCert(1*time.Hour, false)).
 		WithSetup("start etcd", startEtcd("foo", int32(2))).
 		WithSetup("add etcd member", scaleEtcd("foo", 3, 0)).
-		WithSetup("start etcdmon", startEtcdmon("foo", 1*time.Hour)).
+		WithSetup("start etcdmon", startEtcdmon("foo")).
 		Assess("etcd has correct members", waitForEtcd("foo", 3)).Feature()
 
 	replaceOnStartup := features.New("replace etcd member on startup").
 		WithSetup("create namespace", createNamespace("startup-replace-etcd-test", 30795)).
 		WithSetup("create ca", createCa()).
+		WithSetup("create etcdmon certs", createEtcdmonCert(1*time.Hour, false)).
 		WithSetup("start etcd", startEtcd("foo", int32(3))).
 		WithSetup("replace etcd member", scaleEtcd("foo", 3, 1)).
-		WithSetup("start etcdmon", startEtcdmon("foo", 1*time.Hour)).
+		WithSetup("start etcdmon", startEtcdmon("foo")).
 		Assess("etcd has correct members", waitForEtcd("foo", 3)).Feature()
 
 	refreshCertificate := features.New("refresh etcd certificate").
 		WithSetup("create namespace", createNamespace("certificate-test", 30796)).
 		WithSetup("create ca", createCa()).
+		WithSetup("create etcdmon certs", createEtcdmonCert(-1*time.Second, false)).
 		WithSetup("start etcd", startEtcd("foo", int32(2))).
+		WithSetup("start etcdmon", startEtcdmon("foo")).
+		WithSetup("update etcdmon certs", createEtcdmonCert(1*time.Hour, true)).
 		WithSetup("add etcd member", scaleEtcd("foo", 3, 0)).
-		WithSetup("start etcdmon", startEtcdmon("foo", -1*time.Second)).
 		Assess("etcd has correct members", waitForEtcd("foo", 3)).Feature()
 
 	testenv.TestInParallel(t, remove, add, replace, removeOnStartup, addOnStartup, replaceOnStartup, refreshCertificate)

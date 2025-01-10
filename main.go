@@ -38,7 +38,7 @@ func main() {
 		panic(err.Error())
 	}
 
-	certs, err := etcdmon.LoadCerts(etcdmon.CertPaths{
+	certs, err := etcdmon.LoadCerts(context.Background(), etcdmon.CertPaths{
 		CaCert:     *caCert,
 		ClientCert: *clientCert,
 		ClientKey:  *clientKey,

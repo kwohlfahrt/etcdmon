@@ -34,7 +34,7 @@ type client struct {
 	client *clientv3.Client
 }
 
-func LoadCerts(certs CertPaths) (*tls.Config, error) {
+func LoadCerts(ctx context.Context, certs CertPaths) (*tls.Config, error) {
 	if certs.CaCert == "" {
 		return nil, nil
 	}
@@ -51,16 +51,19 @@ func LoadCerts(certs CertPaths) (*tls.Config, error) {
 		}
 	}
 
-	var clientCerts []tls.Certificate = nil
+	config := &tls.Config{RootCAs: ca}
 	if certs.ClientCert != "" {
-		clientCert, err := tls.LoadX509KeyPair(certs.ClientCert, certs.ClientKey)
-		if err != nil {
-			return nil, err
+		config.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			klog.V(3).Info("getting client certs")
+			clientCert, err := tls.LoadX509KeyPair(certs.ClientCert, certs.ClientKey)
+			if err != nil {
+				return nil, err
+			}
+			return &clientCert, nil
 		}
-		clientCerts = []tls.Certificate{clientCert}
 	}
 
-	return &tls.Config{RootCAs: ca, Certificates: clientCerts}, nil
+	return config, nil
 }
 
 func NewEtcd(tlsConfig *tls.Config) EtcdClient {
