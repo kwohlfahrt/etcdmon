@@ -38,16 +38,16 @@ func main() {
 		panic(err.Error())
 	}
 
-	certs := etcdmon.CertPaths{
+	certs, err := etcdmon.LoadCerts(context.Background(), etcdmon.CertPaths{
 		CaCert:     *caCert,
 		ClientCert: *clientCert,
 		ClientKey:  *clientKey,
-	}
-
-	etcd, err := etcdmon.NewEtcd(certs)
+	})
 	if err != nil {
 		panic(err.Error())
 	}
+
+	etcd := etcdmon.NewEtcd(certs)
 	controller := etcdmon.NewController(clientset, etcd, *namespace, *selector, *timeout)
-	controller.Run(context.Background(), certs, 1)
+	controller.Run(context.Background(), 1)
 }

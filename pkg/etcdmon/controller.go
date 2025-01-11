@@ -82,7 +82,7 @@ func NewController(client kubernetes.Interface, etcd EtcdClient, namespace strin
 	}
 }
 
-func (c *Controller) Run(ctx context.Context, etcdCerts CertPaths, workers int) error {
+func (c *Controller) Run(ctx context.Context, workers int) error {
 	defer runtime.HandleCrash()
 	defer c.queue.ShutDown()
 

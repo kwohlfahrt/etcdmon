@@ -34,7 +34,11 @@ type client struct {
 	client *clientv3.Client
 }
 
-func NewEtcd(certs CertPaths) (EtcdClient, error) {
+func LoadCerts(ctx context.Context, certs CertPaths) (*tls.Config, error) {
+	if certs.CaCert == "" {
+		return nil, nil
+	}
+
 	var ca *x509.CertPool = nil
 	if certs.CaCert != "" {
 		ca = x509.NewCertPool()
@@ -47,24 +51,26 @@ func NewEtcd(certs CertPaths) (EtcdClient, error) {
 		}
 	}
 
-	var clientCerts []tls.Certificate = nil
+	config := &tls.Config{RootCAs: ca}
 	if certs.ClientCert != "" {
-		clientCert, err := tls.LoadX509KeyPair(certs.ClientCert, certs.ClientKey)
-		if err != nil {
-			return nil, err
+		config.GetClientCertificate = func(*tls.CertificateRequestInfo) (*tls.Certificate, error) {
+			klog.V(3).Info("getting client certs")
+			clientCert, err := tls.LoadX509KeyPair(certs.ClientCert, certs.ClientKey)
+			if err != nil {
+				return nil, err
+			}
+			return &clientCert, nil
 		}
-		clientCerts = []tls.Certificate{clientCert}
 	}
 
-	var tlsConfig *tls.Config
-	if ca != nil || clientCerts != nil {
-		tlsConfig = &tls.Config{RootCAs: ca, Certificates: clientCerts}
-	}
+	return config, nil
+}
 
+func NewEtcd(tlsConfig *tls.Config) EtcdClient {
 	etcd := &client{
 		config: clientv3.Config{DialTimeout: 2 * time.Second, TLS: tlsConfig},
 	}
-	return etcd, nil
+	return etcd
 }
 
 func (c *client) Start(ctx context.Context, endpoints ...string) error {
