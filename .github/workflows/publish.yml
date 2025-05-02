@@ -16,12 +16,9 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: set up buildx
-        uses: docker/setup-buildx-action@v3
-      - name: build etcdmon image
-        uses: docker/build-push-action@v6
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
         with:
           context: .
           load: true
@@ -46,28 +43,30 @@ jobs:
       contents: read
       packages: write
     steps:
-      - name: checkout
-        uses: actions/checkout@v4
-      - name: set up qemu
-        # For aarch64 builder support
-        uses: docker/setup-qemu-action@v3
-      - name: set up buildx
-        uses: docker/setup-buildx-action@v3
-      - name: log in to registry
-        uses: docker/login-action@v3
+      # For aarch64 builder support
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: extract tags
+      - uses: docker/metadata-action@v5
         id: meta
-        uses: docker/metadata-action@v5
         with:
           images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
-      - name: build and push
+      - name: build Docker image
         uses: docker/build-push-action@v6
         with:
-          context: .
+          platforms: linux/amd64,linux/arm64
+          tags: ${{ steps.meta.outputs.tags }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      # Seeing errors when pushing due to an expired token: docker/build-push-action#1371.
+      # Try a build-only step to work around.
+      - name: push Docker image
+        uses: docker/build-push-action@v6
+        with:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
