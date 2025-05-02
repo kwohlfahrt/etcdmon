@@ -24,8 +24,9 @@ jobs:
           echo "KUBECONFIG=$(pwd)/kubeconfig.yaml" >> $GITHUB_ENV
       - name: Load operator images
         run: |
-          docker pull ${{ env.REGISTRY }}/${{ github.repository }}:latest
-          kind load docker-image ${{ env.REGISTRY }}/${{ github.repository }}:latest
+          VERSION=$(helm show chart ./helm | yq .appVersion)
+          docker pull ${{ env.REGISTRY }}/${{ github.repository }}:v${VERSION}
+          kind load docker-image ${{ env.REGISTRY }}/${{ github.repository }}:v${VERSION}
       - run: helm install ci ./helm --namespace=etcdmon --create-namespace
 
   publish:
