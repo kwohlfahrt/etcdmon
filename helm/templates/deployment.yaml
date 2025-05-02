@@ -1,0 +1,45 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "etcdmon.fullname" . }}
+  labels:
+    {{- include "etcdmon.labels" . | nindent 4 }}
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "etcdmon.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "etcdmon.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "etcdmon.fullname" . }}
+      containers:
+        - name: {{ .Chart.Name }}
+          {{- with .Values.image }}
+          image: "{{ .name }}:{{ .tag | default (printf "v%s" $.Chart.AppVersion) }}"
+          {{- end }}
+          args:
+            - --ca-cert=/etc/kubernetes/pki/etcd/ca.crt
+            - --client-cert=/etc/kubernetes/pki/etcd/peer.crt
+            - --client-key=/etc/kubernetes/pki/etcd/peer.key
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          volumeMounts:
+            - name: etcd-certs
+              mountPath: /etc/kubernetes/pki/etcd
+              readOnly: true
+      volumes:
+        - name: etcd-certs
+          hostPath:
+            path: /etc/kubernetes/pki/etcd
+            type: Directory
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
