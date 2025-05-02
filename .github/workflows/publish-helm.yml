@@ -1,0 +1,50 @@
+name: Publish Helm chart
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - helm-v*
+  # All external PRs require approval to run actions
+  pull_request: ~
+
+env:
+  REGISTRY: ghcr.io
+  PREFIX: ${{ github.repository_owner }}/helm-charts
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+      - name: Create kind cluster
+        run: |
+          kind create cluster --config tests/e2e/kind.yaml --kubeconfig ./kubeconfig.yaml
+          echo "KUBECONFIG=$(pwd)/kubeconfig.yaml" >> $GITHUB_ENV
+      - name: Load operator images
+        run: |
+          docker pull ${{ env.REGISTRY }}/${{ github.repository }}:latest
+          kind load docker-image ${{ env.REGISTRY }}/${{ github.repository }}:latest
+      - run: helm install ci ./helm --namespace=etcdmon --create-namespace
+
+  publish:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    needs: test
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: parse tag
+        id: tag
+        run: |
+          echo "version=$(sed 's/^helm-v\([0-9.]\+\(-.*\)\?\)$/\1/' <<< '${{ github.ref_name }}')" >> $GITHUB_OUTPUT
+      - run: helm package --version=${{ steps.tag.outputs.version }} ./helm
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - run: helm push etcdmon-${{ steps.tag.outputs.version }}.tgz oci://${{ env.REGISTRY }}/${{ env.PREFIX }}
