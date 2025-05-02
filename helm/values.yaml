@@ -1,0 +1,6 @@
+image:
+  name: ghcr.io/kwohlfahrt/etcdmon
+  # Overrides the image tag whose default is the chart appVersion.
+  tag: ""
+
+resources: {}
