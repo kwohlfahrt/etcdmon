@@ -18,7 +18,7 @@ spec:
       containers:
         - name: {{ .Chart.Name }}
           {{- with .Values.image }}
-          image: "{{ .name }}:{{ .tag | default $.Chart.AppVersion }}"
+          image: "{{ .name }}:{{ .tag | default (printf "v%s" $.Chart.AppVersion) }}"
           {{- end }}
           args:
             - --ca-cert=/etc/kubernetes/pki/etcd/ca.crt
