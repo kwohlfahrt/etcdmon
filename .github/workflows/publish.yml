@@ -59,15 +59,6 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           platforms: linux/amd64,linux/arm64
-          tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-      # Seeing errors when pushing due to an expired token: docker/build-push-action#1371.
-      # Try a build-only step to work around.
-      - name: push Docker image
-        uses: docker/build-push-action@v6
-        with:
-          platforms: linux/amd64,linux/arm64
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha
